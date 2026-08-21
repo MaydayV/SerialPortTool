@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "串口助手 SerialAid",
+  "productName": "串口助手 SerialPortTool",
   "version": "0.1.0",
-  "identifier": "com.maydayv.serialaid",
+  "identifier": "com.maydayv.serialporttool",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "串口助手 SerialAid",
+        "title": "串口助手 SerialPortTool",
         "width": 1100,
         "height": 720,
         "minWidth": 900,
@@ -29,7 +29,7 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "跨平台串口调试助手：串口/TCP/UDP 收发、协议编解码、波形图",
-    "longDescription": "SerialAid 是一款现代化的跨平台串口调试工具，支持串口、TCP/UDP 连接，提供收发面板、帧协议编解码（CRC16/CRC32/SUM/XOR）、实时波形图等功能。",
+    "longDescription": "SerialPortTool 是一款现代化的跨平台串口调试工具，支持串口、TCP/UDP 连接，提供收发面板、帧协议编解码（CRC16/CRC32/SUM/XOR）、实时波形图等功能。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

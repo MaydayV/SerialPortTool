@@ -1,4 +1,4 @@
-# 串口助手 SerialAid
+# 串口助手 SerialPortTool
 
 [![Tauri 2](https://img.shields.io/badge/Tauri-2.0-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
 [![Vue 3](https://img.shields.io/badge/Vue-3.5-42B883?logo=vuedotjs&logoColor=white)](https://vuejs.org)
@@ -89,7 +89,7 @@ npm run tauri build
 ## 📁 目录结构
 
 ```
-serial-aid/
+SerialPortTool/
 ├── src/                    # 前端（Vue 3 + TS）
 │   ├── components/         # 界面组件
 │   │   ├── ConnectionBar.vue   # 连接配置栏

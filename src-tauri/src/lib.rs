@@ -1,4 +1,4 @@
-// SerialAid - 串口助手 Tauri 后端入口
+// SerialPortTool - 串口助手 Tauri 后端入口
 pub mod conn;
 
 use conn::{ConnConfig, ConnManager};

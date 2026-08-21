@@ -46,7 +46,7 @@ const statusTitle: Record<string, string> = {
 watch(
   () => conn.status,
   (s) => {
-    document.title = statusTitle[s] ? `${statusTitle[s]} - 串口助手 SerialAid` : "串口助手 SerialAid";
+    document.title = statusTitle[s] ? `${statusTitle[s]} - 串口助手 SerialPortTool` : "串口助手 SerialPortTool";
   }
 );
 let sysMedia: MediaQueryList | null = null;
