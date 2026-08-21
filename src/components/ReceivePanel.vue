@@ -1,29 +1,35 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useRxStore } from "../stores/rx";
+import type { RxEntry } from "../stores/rx";
+import { useConnStore } from "../stores/conn";
 import { formatTime } from "../utils/bytes";
 
 const store = useRxStore();
+const conn = useConnStore();
+const connStatus = computed(() => conn.status);
 
 const scrollEl = ref<HTMLDivElement | null>(null);
 const viewportEl = ref<HTMLDivElement | null>(null);
 
 // 虚拟滚动状态
-const ROW_HEIGHT = 22;
+const ROW_HEIGHT_BASE = 22;
 const viewportH = ref(400);
 const scrollTop = ref(0);
 const buffer = 20; // 上下缓冲行数
 
+const rowHeight = computed(() => ROW_HEIGHT_BASE + (store.fontSize - 12.5) * 2.2);
 const visible = computed(() => {
-  const start = Math.max(0, Math.floor(scrollTop.value / ROW_HEIGHT) - buffer);
-  const count = Math.ceil(viewportH.value / ROW_HEIGHT) + buffer * 2;
-  return store.entries.slice(start, start + count).map((e, i) => ({
+  const list = store.filteredEntries;
+  const start = Math.max(0, Math.floor(scrollTop.value / rowHeight.value) - buffer);
+  const count = Math.ceil(viewportH.value / rowHeight.value) + buffer * 2;
+  return list.slice(start, start + count).map((e, i) => ({
     entry: e,
     index: start + i,
   }));
 });
 
-const totalHeight = computed(() => store.entries.length * ROW_HEIGHT);
+const totalHeight = computed(() => store.filteredCount * rowHeight.value);
 
 function onScroll() {
   scrollTop.value = scrollEl.value?.scrollTop ?? 0;
@@ -32,6 +38,7 @@ function onScroll() {
   if (!el) return;
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   store.autoScroll = nearBottom;
+  checkNearBottom();
 }
 
 async function scrollToBottom() {
@@ -55,6 +62,41 @@ watch(
 function resizeObserver() {
   const el = viewportEl.value;
   if (el) viewportH.value = el.clientHeight;
+}
+
+/** 是否远离底部（显示"回到底部"按钮） */
+const farFromBottom = ref(false);
+function checkNearBottom() {
+  const el = scrollEl.value;
+  if (!el) return;
+  const near = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  farFromBottom.value = !near && store.filteredCount > 0;
+  if (near) store.autoScroll = true;
+}
+
+async function scrollToBottomNow() {
+  await nextTick();
+  const el = scrollEl.value;
+  if (el) {
+    el.scrollTop = el.scrollHeight;
+    store.autoScroll = true;
+    farFromBottom.value = false;
+  }
+}
+
+/** 复制行内容到剪贴板 */
+let copyTip: ReturnType<typeof setTimeout> | null = null;
+const copyToast = ref("");
+async function copyEntry(e: RxEntry) {
+  const text = store.rxHexMode ? e.hex : e.text;
+  try {
+    await navigator.clipboard.writeText(text);
+    copyToast.value = `已复制 ${text.length} 字符`;
+  } catch {
+    copyToast.value = "复制失败";
+  }
+  if (copyTip) clearTimeout(copyTip);
+  copyTip = setTimeout(() => (copyToast.value = ""), 1500);
 }
 
 onMounted(() => {
@@ -128,9 +170,19 @@ function demoData() {
         </select>
       </div>
       <div class="right">
+        <input
+          v-model="store.filterText"
+          class="filter-input"
+          placeholder="过滤关键字..."
+          title="按文本或 HEX 过滤接收内容"
+        />
         <span class="stats">
           收 {{ store.rxCount }} 帧 · {{ store.formatBytes(store.rxBytes) }} / 发
           {{ store.txCount }} 帧 · {{ store.formatBytes(store.txBytes) }}
+          <span class="rates">
+            ↓ {{ store.formatBytes(store.rxRate) }}/s ↑
+            {{ store.formatBytes(store.txRate) }}/s
+          </span>
         </span>
         <button
           class="tool-btn danger"
@@ -145,7 +197,25 @@ function demoData() {
       </div>
     </div>
 
+    <div v-if="store.paused" class="pause-banner">
+      ⏸ 已暂停接收（新数据将被丢弃）
+    </div>
+    <div v-if="store.filterText" class="filter-banner">
+      过滤中：仅显示匹配 "{{ store.filterText }}" 的行（{{
+        store.filteredCount
+      }}
+      条）
+    </div>
+
     <div ref="viewportEl" class="viewport">
+      <div
+        v-if="store.filteredCount === 0"
+        class="empty-state"
+      >
+        <template v-if="store.filterText">没有匹配 "{{ store.filterText }}" 的记录</template>
+        <template v-else-if="connStatus === 'connected'">等待接收数据...</template>
+        <template v-else>未连接 · 配置连接参数后点击「打开」开始调试</template>
+      </div>
       <div
         ref="scrollEl"
         class="scroll"
@@ -154,13 +224,19 @@ function demoData() {
       >
         <div
           class="virtual-inner"
-          :style="{ transform: `translateY(${visible[0]?.index ?? 0 * ROW_HEIGHT}px)` }"
+          :style="{ transform: `translateY(${visible[0]?.index ?? 0 * rowHeight}px)` }"
         >
           <div
             v-for="entry in visible"
             :key="entry.entry.id"
             :class="entryClass(entry.entry.dir)"
-            :style="{ height: ROW_HEIGHT + 'px' }"
+            :style="{
+              height: rowHeight + 'px',
+              fontSize: store.fontSize + 'px',
+              lineHeight: rowHeight + 'px',
+            }"
+            :title="'点击复制'"
+            @click="copyEntry(entry.entry)"
           >
             <span v-if="store.showTimestamp" class="ts">
               {{ formatTime(entry.entry.ts) }}
@@ -188,6 +264,18 @@ function demoData() {
         </div>
       </div>
     </div>
+
+    <button
+      v-if="farFromBottom"
+      class="jump-bottom"
+      @click="scrollToBottomNow"
+      title="回到底部"
+    >
+      ⬇ 回到底部
+    </button>
+    <transition name="toast">
+      <div v-if="copyToast" class="copy-toast">{{ copyToast }}</div>
+    </transition>
   </div>
 </template>
 
@@ -197,6 +285,7 @@ function demoData() {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  position: relative;
 }
 .toolbar {
   display: flex;
@@ -245,11 +334,93 @@ function demoData() {
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
+.rates {
+  color: var(--accent);
+  margin-left: 6px;
+  font-size: 11.5px;
+}
+.filter-input {
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  width: 130px;
+  outline: none;
+}
+.filter-input:focus {
+  border-color: #0a84ff;
+}
+.pause-banner,
+.filter-banner {
+  padding: 3px 12px;
+  font-size: 11.5px;
+  border-bottom: 1px solid var(--panel-border);
+  color: var(--text-secondary);
+}
+.pause-banner {
+  background: rgba(255, 159, 10, 0.12);
+  color: #b26a00;
+}
+.filter-banner {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.jump-bottom {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 10;
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.jump-bottom:hover {
+  background: var(--btn-hover);
+}
+.copy-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 20;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  padding: 4px 12px;
+  font-size: 12px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+}
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.15s ease;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+}
 .viewport {
   flex: 1;
   min-height: 0;
   overflow: hidden;
   position: relative;
+}
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  pointer-events: none;
 }
 .scroll {
   overflow-y: auto;

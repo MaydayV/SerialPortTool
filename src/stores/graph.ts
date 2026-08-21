@@ -91,6 +91,11 @@ export const useGraphStore = defineStore("graph", () => {
     }
   }
 
+  /** 修改曲线颜色 */
+  function setSeriesColor(name: string, color: string) {
+    if (series.value[name]) series.value[name].color = color;
+  }
+
   /** 接收数据 → 解析曲线帧 */
   function processData(data: Uint8Array) {
     if (!enabled.value || paused.value) return;
@@ -163,5 +168,6 @@ export const useGraphStore = defineStore("graph", () => {
     processData,
     clear,
     exportCsv,
+    setSeriesColor,
   };
 });

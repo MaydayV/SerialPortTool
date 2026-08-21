@@ -67,9 +67,19 @@ onMounted(() => {
           {{ p.name }}{{ p.desc ? " · " + p.desc : "" }}
         </option>
       </select>
-      <select v-model.number="store.serial.baudrate" class="ctl">
-        <option v-for="b in baudrates" :key="b" :value="b">{{ b }}</option>
-      </select>
+      <button class="opt" title="刷新串口列表" @click="store.refreshPorts()">
+        刷新
+      </button>
+      <input
+        v-model.number="store.serial.baudrate"
+        class="ctl baud-input"
+        list="baud-list"
+        type="number"
+        title="波特率（可自定义输入）"
+      />
+      <datalist id="baud-list">
+        <option v-for="b in baudrates" :key="b" :value="b" />
+      </datalist>
       <select v-model.number="store.serial.data_bits" class="ctl short">
         <option :value="5">5</option>
         <option :value="6">6</option>
@@ -90,6 +100,9 @@ onMounted(() => {
         <option value="software">XON/XOFF</option>
         <option value="hardware">RTS/CTS</option>
       </select>
+      <label class="chk" title="断线后自动重连">
+        <input type="checkbox" v-model="store.serial.auto_reconnect" /> 自动重连
+      </label>
     </template>
 
     <!-- TCP/UDP 参数 -->
@@ -102,18 +115,38 @@ onMounted(() => {
         <option value="client">客户端</option>
         <option value="server">服务端</option>
       </select>
-      <input
-        v-if="store.tcpudp.mode === 'client'"
-        v-model="store.tcpudp.target"
-        class="ctl target-input"
-        placeholder="目标地址 host:port"
-      />
-      <input
-        v-else
-        v-model.number="store.tcpudp.port"
-        class="ctl short"
-        placeholder="监听端口"
-      />
+      <template v-if="store.tcpudp.mode === 'client'">
+        <input
+          v-model="store.tcpudp.target"
+          class="ctl target-input"
+          placeholder="目标地址 host:port"
+          list="tcp-port-list"
+        />
+        <datalist id="tcp-port-list">
+          <option value="127.0.0.1:2345" />
+          <option value="127.0.0.1:8080" />
+          <option value="127.0.0.1:8081" />
+          <option value="192.168.1.1:8080" />
+          <option value="192.168.1.100:8080" />
+        </datalist>
+      </template>
+      <template v-else>
+        <input
+          v-model.number="store.tcpudp.port"
+          class="ctl short"
+          placeholder="监听端口"
+          list="listen-port-list"
+        />
+        <datalist id="listen-port-list">
+          <option value="8080" />
+          <option value="8081" />
+          <option value="2345" />
+          <option value="9000" />
+        </datalist>
+      </template>
+      <label class="chk" title="断线后自动重连">
+        <input type="checkbox" v-model="store.tcpudp.auto_reconnect" /> 自动重连
+      </label>
     </template>
 
     <!-- 状态 + 开关 -->
@@ -186,6 +219,34 @@ onMounted(() => {
 }
 .ctl.short {
   max-width: 90px;
+}
+.baud-input {
+  max-width: 110px;
+}
+.chk {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chk input {
+  accent-color: #0a84ff;
+}
+.opt {
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  border-radius: var(--radius-md);
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.opt:hover {
+  background: var(--btn-hover);
+  color: var(--text-primary);
 }
 .port-select {
   min-width: 180px;

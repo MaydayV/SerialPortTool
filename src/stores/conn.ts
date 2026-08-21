@@ -41,8 +41,10 @@ export const useConnStore = defineStore("conn", () => {
       if (serial.value.port === "" && ports.value.length > 0) {
         serial.value.port = ports.value[0].name;
       }
+      return true;
     } catch (e) {
       lastError.value = String(e);
+      return false;
     }
   }
 

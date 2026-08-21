@@ -12,7 +12,12 @@ interface Persisted {
   connType: "serial" | "tcpudp";
   serial: object;
   tcpudp: object;
-  rx: { encoding: string; rxHexMode: boolean; showTimestamp: boolean };
+  rx: {
+    encoding: string;
+    rxHexMode: boolean;
+    showTimestamp: boolean;
+    fontSize: number;
+  };
   tx: {
     sendHexMode: boolean;
     appendNewline: boolean;
@@ -33,7 +38,7 @@ interface Persisted {
     xRange: number;
     autoScroll: boolean;
   };
-  theme: "light" | "dark";
+  theme: "light" | "dark" | "system";
 }
 
 export function saveConfig(theme: string) {
@@ -51,6 +56,7 @@ export function saveConfig(theme: string) {
       encoding: rx.encoding,
       rxHexMode: rx.rxHexMode,
       showTimestamp: rx.showTimestamp,
+      fontSize: rx.fontSize,
     },
     tx: {
       sendHexMode: tx.sendHexMode,
@@ -72,12 +78,12 @@ export function saveConfig(theme: string) {
       xRange: graph.xRange,
       autoScroll: graph.autoScroll,
     },
-    theme: theme as "light" | "dark",
+    theme: theme as "light" | "dark" | "system",
   };
   localStorage.setItem(KEY, JSON.stringify(data));
 }
 
-export function loadConfig(themeRef: { value: "light" | "dark" }) {
+export function loadConfig(themeRef: { value: "light" | "dark" | "system" }) {
   const raw = localStorage.getItem(KEY);
   if (!raw) return;
   try {
@@ -100,14 +106,14 @@ export function loadConfig(themeRef: { value: "light" | "dark" }) {
       proto.txEnabled = d.proto.txEnabled;
     }
     Object.assign(graph, d.graph);
-    if (d.theme) themeRef.value = d.theme;
+    if (d.theme) themeRef.value = d.theme as typeof themeRef.value;
   } catch (e) {
     console.warn("config load failed", e);
   }
 }
 
 /** 启动持久化订阅（App 初始化调用） */
-export function initPersistence(themeRef: { value: "light" | "dark" }) {
+export function initPersistence(themeRef: { value: "light" | "dark" | "system" }) {
   // 防抖保存
   let timer: ReturnType<typeof setTimeout> | null = null;
   const schedule = () => {
@@ -129,6 +135,7 @@ export function initPersistence(themeRef: { value: "light" | "dark" }) {
       () => rx.encoding,
       () => rx.rxHexMode,
       () => rx.showTimestamp,
+      () => rx.fontSize,
       () => tx.sendHexMode,
       () => tx.appendNewline,
       () => tx.useCRLF,

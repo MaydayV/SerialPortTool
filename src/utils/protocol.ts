@@ -108,9 +108,21 @@ function checksumRange(t: FrameTemplate, frame: Uint8Array, tailLen: number): Ui
  * @param t 模板
  * @returns 提取出的帧数组（从 buffer 头部移除已消费字节）
  */
-export function extractFrames(buffer: Uint8Array, t: FrameTemplate): { frames: Uint8Array[]; rest: Uint8Array } {
+export function extractFrames(
+  buffer: Uint8Array,
+  t: FrameTemplate
+): {
+  frames: Uint8Array[];
+  rest: Uint8Array;
+  /** 坏帧丢弃次数（校验失败） */
+  errors: number;
+  /** 杂散字节数（帧头前丢弃） */
+  trash: number;
+} {
   const frames: Uint8Array[] = [];
   let buf = buffer;
+  let errors = 0;
+  let trash = 0;
   const header = hexToBytes(t.header);
   const tail = hexToBytes(t.tail);
   const csLen = CHECKSUM_ALGOS.find((a) => a.id === t.checksum)?.bytes ?? 0;
@@ -121,7 +133,10 @@ export function extractFrames(buffer: Uint8Array, t: FrameTemplate): { frames: U
     if (header.length > 0) {
       start = findSubarray(buf, header);
       if (start === -1) break; // 未找到帧头，丢弃积累
-      if (start > 0) buf = buf.slice(start); // 丢弃帧头前的杂散字节
+      if (start > 0) {
+        trash += start;
+        buf = buf.slice(start); // 丢弃帧头前的杂散字节
+      }
     }
 
     // 计算帧长
@@ -157,6 +172,7 @@ export function extractFrames(buffer: Uint8Array, t: FrameTemplate): { frames: U
       const actual = frame.slice(csPos, csPos + csLen);
       if (!bytesEqual(actual, csBytes)) {
         // 校验失败：丢弃首字节继续找
+        errors++;
         buf = buf.slice(1);
         continue;
       }
@@ -164,7 +180,7 @@ export function extractFrames(buffer: Uint8Array, t: FrameTemplate): { frames: U
     frames.push(frame);
     buf = buf.slice(frameLen);
   }
-  return { frames, rest: buf };
+  return { frames, rest: buf, errors, trash };
 }
 
 /**

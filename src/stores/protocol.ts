@@ -15,6 +15,11 @@ export const useProtocolStore = defineStore("protocol", () => {
   const txEnabled = ref(false); // 发送组帧
   const rxBuffer = ref<Uint8Array>(new Uint8Array(0)); // 解帧累积缓冲
 
+  // ===== 解帧统计 =====
+  const frameCount = ref(0); // 解出的完整帧
+  const frameErrorCount = ref(0); // 丢弃的坏帧（CRC 失败/长度非法）
+  const frameTrashCount = ref(0); // 无法对齐的杂散字节
+
   const active = computed(
     () =>
       templates.value.find((t) => t.name === activeName.value) ??
@@ -60,8 +65,11 @@ export const useProtocolStore = defineStore("protocol", () => {
     const combined = new Uint8Array(rxBuffer.value.length + data.length);
     combined.set(rxBuffer.value);
     combined.set(data, rxBuffer.value.length);
-    const { frames, rest } = extractFrames(combined, active.value);
+    const { frames, rest, errors, trash } = extractFrames(combined, active.value);
     rxBuffer.value = rest;
+    frameCount.value += frames.length;
+    frameErrorCount.value += errors;
+    frameTrashCount.value += trash;
     return { frames, enabled: true };
   }
 
@@ -75,12 +83,64 @@ export const useProtocolStore = defineStore("protocol", () => {
     rxBuffer.value = new Uint8Array(0);
   }
 
+  /** 重置解帧统计 */
+  function resetStats() {
+    frameCount.value = 0;
+    frameErrorCount.value = 0;
+    frameTrashCount.value = 0;
+  }
+
+  /** 导出模板库 JSON */
+  function exportTemplates(): string {
+    return JSON.stringify(
+      {
+        version: 1,
+        templates: templates.value.map((t) => ({
+          ...t,
+          length: { ...t.length },
+        })),
+      },
+      null,
+      2
+    );
+  }
+
+  /** 从 JSON 导入模板（合并：同名覆盖，新增追加） */
+  function importTemplates(json: string): { added: number; replaced: number } {
+    try {
+      const parsed = JSON.parse(json);
+      const list: FrameTemplate[] = Array.isArray(parsed)
+        ? parsed
+        : parsed.templates;
+      if (!Array.isArray(list)) throw new Error("格式错误");
+      let added = 0;
+      let replaced = 0;
+      for (const t of list) {
+        if (!t || typeof t.name !== "string" || !t.name.trim()) continue;
+        const idx = templates.value.findIndex((x) => x.name === t.name);
+        if (idx >= 0) {
+          templates.value[idx] = { ...templates.value[idx], ...t, length: { ...templates.value[idx].length, ...(t.length ?? {}) } };
+          replaced++;
+        } else {
+          templates.value.push({ ...t, length: { ...(t.length ?? {}) } });
+          added++;
+        }
+      }
+      return { added, replaced };
+    } catch {
+      return { added: 0, replaced: 0 };
+    }
+  }
+
   return {
     templates,
     activeName,
     rxEnabled,
     txEnabled,
     active,
+    frameCount,
+    frameErrorCount,
+    frameTrashCount,
     select,
     addTemplate,
     removeTemplate,
@@ -88,5 +148,8 @@ export const useProtocolStore = defineStore("protocol", () => {
     processRx,
     processTx,
     resetBuffer,
+    resetStats,
+    exportTemplates,
+    importTemplates,
   };
 });

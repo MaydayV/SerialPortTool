@@ -60,6 +60,45 @@ const isPassThrough = computed(
     !store.active.length.enabled &&
     store.active.checksum === "none"
 );
+
+/** 导出模板库到文件 */
+function exportTemplates() {
+  const blob = new Blob([store.exportTemplates()], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "serialaid-templates.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** 导入模板库 */
+const importInput = ref<HTMLInputElement | null>(null);
+function pickImport() {
+  importInput.value?.click();
+}
+async function onImportFile(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  const text = await file.text();
+  const res = store.importTemplates(text);
+  if (res.added || res.replaced) {
+    alert(`导入成功：新增 ${res.added} 个，覆盖 ${res.replaced} 个`);
+  } else {
+    alert("导入失败：文件格式不正确");
+  }
+  input.value = "";
+}
+
+/** 删除确认 */
+function onRemove() {
+  if (confirm(`确定删除模板「${store.activeName}」？`)) {
+    store.removeTemplate(store.activeName);
+  }
+}
 </script>
 
 <template>
@@ -82,6 +121,15 @@ const isPassThrough = computed(
       <span v-if="store.active.description" class="desc">
         {{ store.active.description }}
       </span>
+      <span
+        v-if="store.rxEnabled && !isPassThrough"
+        class="frame-stats"
+        title="解帧统计（点击重置）"
+        @click="store.resetStats()"
+      >
+        解出 {{ store.frameCount }} 帧 · 坏帧 {{ store.frameErrorCount }} · 杂散
+        {{ store.frameTrashCount }}B
+      </span>
       <div class="spacer"></div>
       <input
         v-model="newName"
@@ -91,9 +139,18 @@ const isPassThrough = computed(
       />
       <button class="mini" @click="addNew">＋新建</button>
       <button class="mini" @click="startEdit" :disabled="isPassThrough">编辑</button>
+      <button class="mini" @click="exportTemplates" title="导出全部模板为 JSON">导出</button>
+      <button class="mini" @click="pickImport" title="从 JSON 导入模板">导入</button>
+      <input
+        ref="importInput"
+        type="file"
+        accept=".json"
+        style="display: none"
+        @change="onImportFile"
+      />
       <button
         class="mini danger"
-        @click="store.removeTemplate(store.activeName)"
+        @click="onRemove"
         :disabled="store.templates.length <= 1"
       >
         删除
@@ -207,6 +264,18 @@ const isPassThrough = computed(
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 300px;
+}
+.frame-stats {
+  color: var(--accent);
+  font-size: 11.5px;
+  cursor: pointer;
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.frame-stats:hover {
+  filter: brightness(1.1);
 }
 .spacer {
   flex: 1;

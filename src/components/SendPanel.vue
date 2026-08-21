@@ -63,6 +63,14 @@ function onRemoveSelected() {
   }
 }
 
+/** 快捷条删除确认 */
+function onRemoveCustom(id: number) {
+  const item = tx.customItems.find((i) => i.id === id);
+  if (item && confirm(`确定删除快捷项「${item.text || "(空)"}」？`)) {
+    tx.removeCustomItem(id);
+  }
+}
+
 function pickFile() {
   fileInput.value?.click();
 }
@@ -173,7 +181,7 @@ function onScheduleChange() {
       <div v-for="item in tx.customItems" :key="item.id" class="custom-item">
         <input v-model="item.text" class="custom-input" placeholder="快捷内容" />
         <button class="mini-btn" @click="tx.sendCustom(item.id)">发送</button>
-        <button class="mini-btn danger" @click="tx.removeCustomItem(item.id)">
+        <button class="mini-btn danger" @click="onRemoveCustom(item.id)">
           ✕
         </button>
       </div>
@@ -182,6 +190,14 @@ function onScheduleChange() {
     <div class="actions">
       <button class="send-btn" :disabled="!conn.isConnected()" @click="onSend">
         发送
+      </button>
+      <button
+        class="action-btn"
+        title="把当前输入框内容存为快捷项"
+        :disabled="!tx.sendText.trim()"
+        @click="tx.addCustomItem(tx.sendText)"
+      >
+        ＋存入快捷
       </button>
       <button class="action-btn" @click="tx.addCustomItem()">＋快捷</button>
       <button class="action-btn" @click="pickFile">发送文件</button>

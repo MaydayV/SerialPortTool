@@ -38,14 +38,52 @@ export const useRxStore = defineStore("rx", () => {
   const txCount = ref(0);
   const saveLog = ref(false);
   const logPath = ref("");
+  const filterText = ref(""); // 接收区关键字过滤
+  const fontSize = ref(12.5); // 接收区字号（px）
 
   let seq = 0;
   let logWriter: (line: string) => void = () => {};
+
+  // ===== 实时速率统计（滑动窗口 1s）=====
+  const rxRate = ref(0); // B/s
+  const txRate = ref(0);
+  let rxWindowBytes = 0;
+  let txWindowBytes = 0;
+  let rateTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startRateTimer() {
+    if (rateTimer) return;
+    rateTimer = setInterval(() => {
+      rxRate.value = rxWindowBytes;
+      txRate.value = txWindowBytes;
+      rxWindowBytes = 0;
+      txWindowBytes = 0;
+    }, 1000);
+  }
+  startRateTimer();
+
+  function stopRateTimer() {
+    if (rateTimer) {
+      clearInterval(rateTimer);
+      rateTimer = null;
+    }
+  }
 
   const totalEntries = computed(() => entries.value.length);
   const lastEntry = computed(() =>
     entries.value.length ? entries.value[entries.value.length - 1] : null
   );
+  /** 过滤后的条目（关键字匹配 text 或 hex，忽略大小写） */
+  const filteredEntries = computed(() => {
+    const kw = filterText.value.trim().toLowerCase();
+    if (!kw) return entries.value;
+    return entries.value.filter(
+      (e) =>
+        e.text.toLowerCase().includes(kw) || e.hex.toLowerCase().includes(kw)
+    );
+  });
+  /** 过滤后总行数（用于虚拟滚动高度） */
+  const filteredCount = computed(() => filteredEntries.value.length);
 
   function makeEntry(
     data: Uint8Array,
@@ -75,9 +113,11 @@ export const useRxStore = defineStore("rx", () => {
     if (dir === "rx") {
       rxBytes.value += data.length;
       rxCount.value += 1;
+      rxWindowBytes += data.length;
     } else {
       txBytes.value += data.length;
       txCount.value += 1;
+      txWindowBytes += data.length;
     }
     if (saveLog.value) {
       logWriter(logLine(entry));
@@ -103,6 +143,10 @@ export const useRxStore = defineStore("rx", () => {
     txBytes.value = 0;
     rxCount.value = 0;
     txCount.value = 0;
+    rxWindowBytes = 0;
+    txWindowBytes = 0;
+    rxRate.value = 0;
+    txRate.value = 0;
   }
 
   function togglePause() {
@@ -137,15 +181,22 @@ export const useRxStore = defineStore("rx", () => {
     txBytes,
     rxCount,
     txCount,
+    rxRate,
+    txRate,
     saveLog,
     logPath,
+    filterText,
+    fontSize,
     totalEntries,
     lastEntry,
+    filteredEntries,
+    filteredCount,
     append,
     clear,
     togglePause,
     setup,
     setLogWriter,
+    stopRateTimer,
     formatBytes,
   };
 });

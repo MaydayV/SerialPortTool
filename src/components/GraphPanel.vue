@@ -5,6 +5,8 @@ import { useGraphStore } from "../stores/graph";
 
 const store = useGraphStore();
 const chartEl = ref<HTMLDivElement | null>(null);
+const zoomMode = ref(false); // 滚轮缩放模式
+const colorTarget = ref("");
 let chart: echarts.ECharts | null = null;
 let renderTimer: ReturnType<typeof requestAnimationFrame> | null = null;
 let dirty = false;
@@ -29,7 +31,32 @@ function initChart() {
       axisLabel: { fontSize: 10 },
       splitLine: { lineStyle: { color: "rgba(0,0,0,0.06)" } },
     },
+    dataZoom: [
+      {
+        type: "inside",
+        xAxisIndex: 0,
+        filterMode: "none",
+        disabled: true, // 默认关闭，缩放模式开启
+      },
+    ],
   });
+}
+
+/** 切换缩放模式（开启时暂停自动滚动，避免冲突） */
+function toggleZoom() {
+  zoomMode.value = !zoomMode.value;
+  if (!chart) return;
+  chart.setOption({
+    dataZoom: [
+      {
+        type: "inside",
+        xAxisIndex: 0,
+        filterMode: "none",
+        disabled: !zoomMode.value,
+      },
+    ],
+  });
+  if (zoomMode.value) store.autoScroll = false;
 }
 
 /** 渲染（rAF 合并，高频数据不卡） */
@@ -134,12 +161,44 @@ function downloadCsv() {
       </button>
       <button
         class="tool-btn"
+        :class="{ active: zoomMode }"
+        @click="toggleZoom"
+        title="开启/关闭滚轮缩放"
+      >
+        缩放
+      </button>
+      <button
+        class="tool-btn"
         :class="{ active: store.paused }"
         @click="store.paused = !store.paused"
       >
         {{ store.paused ? "▶ 继续" : "⏸ 暂停" }}
       </button>
       <span class="stats">帧 {{ store.frameCount }}</span>
+      <template v-if="store.seriesList.length">
+        <span class="sep"></span>
+        <select v-model="colorTarget" class="ctl color-sel">
+          <option value="" disabled>曲线颜色</option>
+          <option v-for="s in store.seriesList" :key="s.name" :value="s.name">
+            {{ s.name }}
+          </option>
+        </select>
+        <input
+          v-if="colorTarget"
+          type="color"
+          class="color-pick"
+          :value="
+            store.seriesList.find((s) => s.name === colorTarget)?.color
+          "
+          @input="
+            (e: Event) => {
+              const v = (e.target as HTMLInputElement).value;
+              if (colorTarget) store.setSeriesColor(colorTarget, v);
+            }
+          "
+          title="修改所选曲线颜色"
+        />
+      </template>
       <div class="spacer"></div>
       <button class="tool-btn" @click="downloadCsv">导出 CSV</button>
       <button class="tool-btn danger" @click="store.clear()">清空</button>
@@ -205,6 +264,23 @@ function downloadCsv() {
 .stats {
   font-size: 12px;
   color: var(--text-secondary);
+}
+.sep {
+  width: 1px;
+  height: 16px;
+  background: var(--panel-border);
+}
+.color-sel {
+  max-width: 110px;
+}
+.color-pick {
+  width: 26px;
+  height: 22px;
+  padding: 1px 2px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--control-bg);
+  cursor: pointer;
 }
 .spacer {
   flex: 1;

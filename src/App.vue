@@ -11,6 +11,7 @@ import { useRxStore } from "./stores/rx";
 import { useTxStore } from "./stores/tx";
 import { useGraphStore } from "./stores/graph";
 import { loadConfig, initPersistence } from "./stores/persist";
+import { formatTime } from "./utils/bytes";
 
 const conn = useConnStore();
 const rx = useRxStore();
@@ -18,19 +19,119 @@ const tx = useTxStore();
 const graph = useGraphStore();
 
 const view = ref<"debug" | "graph">("debug");
-const theme = ref<"light" | "dark">("light");
+const theme = ref<"light" | "dark" | "system">("light");
+
+// 设置面板
+const showSettings = ref(false);
+
+/** 解析生效主题（system → 跟随系统） */
+function effectiveTheme(): "light" | "dark" {
+  if (theme.value !== "system") return theme.value;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+
+// 主题切换（浅色 ↔ 深色；system 时优先切到深色）
+watch(theme, () => {
+  document.documentElement.dataset.theme = effectiveTheme();
+});
+// 窗口标题同步连接状态
+const statusTitle: Record<string, string> = {
+  connected: "● 已连接",
+  connecting: "◐ 连接中",
+  lose: "○ 已断开",
+  closed: "",
+};
+watch(
+  () => conn.status,
+  (s) => {
+    document.title = statusTitle[s] ? `${statusTitle[s]} - 串口助手 SerialAid` : "串口助手 SerialAid";
+  }
+);
+let sysMedia: MediaQueryList | null = null;
+function initTheme() {
+  document.documentElement.dataset.theme = effectiveTheme();
+  if (!sysMedia) {
+    sysMedia = window.matchMedia("(prefers-color-scheme: dark)");
+    sysMedia.addEventListener("change", () => {
+      if (theme.value === "system") {
+        document.documentElement.dataset.theme = effectiveTheme();
+      }
+    });
+  }
+}
+
+/** 重置全部配置并刷新 */
+function resetAll() {
+  if (confirm("确定恢复默认设置？所有配置（连接参数、模板、历史）将被清除。")) {
+    localStorage.removeItem("serialaid.config.v1");
+    localStorage.removeItem("serialaid.ui.v1");
+    location.reload();
+  }
+}
+
+/** 导出接收区日志 */
+function exportLog() {
+  const lines = rx.entries.map((e) => {
+    const t = rx.showTimestamp ? `[${formatTime(e.ts)}] ` : "";
+    const dir = e.dir === "rx" ? "<=" : "=>";
+    const body = rx.rxHexMode ? e.hex : e.text;
+    return `${dir} ${t}${body}`;
+  });
+  if (!lines.length) {
+    alert("接收区为空，无日志可导出");
+    return;
+  }
+  const blob = new Blob(["\ufeff" + lines.join("\n")], {
+    type: "text/plain;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `serialaid-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.log`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// 全局快捷键（非输入框焦点时生效）
+function onGlobalKeydown(e: KeyboardEvent) {
+  // 输入框/文本域/select 内不拦截（保留原生行为）
+  const tag = (e.target as HTMLElement)?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+    switch (e.key.toLowerCase()) {
+      case "f5":
+        // 刷新串口列表
+        e.preventDefault();
+        conn.refreshPorts();
+        break;
+      case "escape":
+        // 清空接收区
+        rx.clear();
+        break;
+      case "h":
+        // 切换 HEX 显示
+        rx.rxHexMode = !rx.rxHexMode;
+        break;
+      case "t":
+        // 切换时间戳
+        rx.showTimestamp = !rx.showTimestamp;
+        break;
+      case "p":
+        // 暂停/继续接收
+        rx.togglePause();
+        break;
+      case " ":
+        // 空格开关连接
+        e.preventDefault();
+        conn.toggle();
+        break;
+    }
+  }
+}
 
 // 主题切换
-function toggleTheme() {
-  theme.value = theme.value === "light" ? "dark" : "light";
-}
-watch(theme, (t) => {
-  document.documentElement.dataset.theme = t;
-});
-function initTheme() {
-  document.documentElement.dataset.theme = theme.value;
-}
-
 onMounted(() => {
   loadConfig(theme);
   initTheme();
@@ -38,11 +139,15 @@ onMounted(() => {
   conn.setupListeners();
   conn.refreshPorts();
   rx.setup();
+  window.addEventListener("keydown", onGlobalKeydown);
   // 曲线数据：从 rx 原始字节流解析（波形自己按曲线协议解析）
   listen<{ data: number[] }>("rx-data", (e) => {
     graph.processData(new Uint8Array(e.payload.data));
   });
-  window.addEventListener("beforeunload", () => tx.stopAll());
+  window.addEventListener("beforeunload", () => {
+    tx.stopAll();
+    rx.stopRateTimer();
+  });
 });
 </script>
 
@@ -66,8 +171,11 @@ onMounted(() => {
         波形
       </button>
       <div class="tab-spacer"></div>
-      <button class="theme-btn" @click="toggleTheme" :title="theme === 'light' ? '切换到深色' : '切换到浅色'">
-        {{ theme === "light" ? "深色模式" : "浅色模式" }}
+      <span class="kbd-hint" title="全局快捷键：空格=开关连接 · H=HEX · T=时间戳 · P=暂停 · Esc=清空 · F5=刷新串口">
+        空格 连接 · H HEX · P 暂停 · Esc 清空
+      </span>
+      <button class="theme-btn" @click="showSettings = !showSettings" title="设置">
+        设置
       </button>
     </nav>
     <main class="content">
@@ -85,6 +193,62 @@ onMounted(() => {
         </div>
       </div>
     </main>
+
+    <!-- 设置面板 -->
+    <div v-if="showSettings" class="settings-overlay" @click.self="showSettings = false">
+      <div class="settings-panel">
+        <div class="settings-head">
+          <span class="settings-title">设置</span>
+          <button class="mini-btn" @click="showSettings = false">✕ 关闭</button>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">主题</span>
+          <div class="seg">
+            <button
+              :class="{ active: theme === 'light' }"
+              @click="theme = 'light'"
+            >
+              浅色
+            </button>
+            <button
+              :class="{ active: theme === 'dark' }"
+              @click="theme = 'dark'"
+            >
+              深色
+            </button>
+            <button
+              :class="{ active: theme === 'system' }"
+              @click="theme = 'system'"
+            >
+              跟随系统
+            </button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">接收字号</span>
+          <input
+            v-model.number="rx.fontSize"
+            type="range"
+            min="10"
+            max="20"
+            step="0.5"
+            class="range-slider"
+          />
+          <span class="setting-val">{{ rx.fontSize }}px</span>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">数据</span>
+          <div class="setting-actions">
+            <button class="mini-btn" @click="exportLog">导出接收日志</button>
+            <button class="mini-btn danger" @click="resetAll">恢复默认设置</button>
+          </div>
+        </div>
+        <div class="settings-foot">
+          设置自动保存 · 快捷键：空格 连接 · H HEX · T 时间戳 · P 暂停 · Esc
+          清空 · F5 刷新串口
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -486,6 +650,12 @@ select optgroup {
 .tab-spacer {
   flex: 1;
 }
+.kbd-hint {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  margin-right: 10px;
+  user-select: none;
+}
 .theme-btn {
   border: 1px solid var(--btn-border);
   background: var(--btn-bg);
@@ -544,5 +714,90 @@ select optgroup {
 }
 .panel.full {
   flex: 1;
+}
+
+/* ===== 设置面板 ===== */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.32);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.settings-panel {
+  width: 460px;
+  max-width: calc(100vw - 48px);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.settings-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.mini-btn {
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  padding: 4px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.mini-btn:hover {
+  background: var(--btn-hover);
+  color: var(--text-primary);
+}
+.mini-btn.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: transparent;
+}
+.mini-btn.danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.setting-label {
+  width: 76px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.range-slider {
+  flex: 1;
+  accent-color: #0a84ff;
+}
+.setting-val {
+  width: 44px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.setting-actions {
+  display: flex;
+  gap: 8px;
+}
+.settings-foot {
+  border-top: 1px solid var(--panel-border);
+  padding-top: 10px;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 </style>
