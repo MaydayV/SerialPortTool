@@ -10,6 +10,7 @@ import {
   formatBytes,
   type ColorSpan,
 } from "../utils/bytes";
+import { bytesToAscii } from "../utils/bytes";
 import { useProtocolStore } from "./protocol";
 
 export interface RxEntry {
@@ -18,6 +19,7 @@ export interface RxEntry {
   dir: "rx" | "tx"; // 收发方向
   hex: string;
   text: string;
+  ascii: string; // 原始字节 ASCII 映射（不可打印→.）
   spans: ColorSpan[]; // 预解析的 ANSI 分段
   raw: Uint8Array;
 }
@@ -29,6 +31,8 @@ export const useRxStore = defineStore("rx", () => {
   const entries = ref<RxEntry[]>([]);
   const encoding = ref("UTF-8");
   const rxHexMode = ref(false); // 接收显示 hex
+  const dualView = ref(false); // 双栏显示：HEX + ASCII 对照
+  const showLineNo = ref(false); // 行号
   const showTimestamp = ref(false);
   const autoScroll = ref(true);
   const paused = ref(false);
@@ -97,6 +101,7 @@ export const useRxStore = defineStore("rx", () => {
       dir,
       hex: bytesToHex(data),
       text,
+      ascii: bytesToAscii(data),
       spans: parseAnsi(text),
       raw: data,
     };
@@ -104,7 +109,7 @@ export const useRxStore = defineStore("rx", () => {
 
   /** 追加一条（内部：先解码再推入） */
   function append(data: Uint8Array, dir: "rx" | "tx", ts = Date.now()) {
-    if (paused.value && dir === "rx") return;
+    // 暂停=缓冲模式：数据继续接收，仅停止自动滚动（由面板控制）
     const entry = makeEntry(data, dir, ts);
     entries.value.push(entry);
     if (entries.value.length > MAX_ENTRIES) {
@@ -151,6 +156,7 @@ export const useRxStore = defineStore("rx", () => {
 
   function togglePause() {
     paused.value = !paused.value;
+    if (paused.value) autoScroll.value = false; // 暂停=停止跟随
   }
 
   /** 接收事件监听（由 App 初始化时调用一次） */
@@ -174,6 +180,8 @@ export const useRxStore = defineStore("rx", () => {
     entries,
     encoding,
     rxHexMode,
+    dualView,
+    showLineNo,
     showTimestamp,
     autoScroll,
     paused,

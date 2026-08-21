@@ -12,9 +12,12 @@ interface Persisted {
   connType: "serial" | "tcpudp";
   serial: object;
   tcpudp: object;
+  profiles: object[];
   rx: {
     encoding: string;
     rxHexMode: boolean;
+    dualView: boolean;
+    showLineNo: boolean;
     showTimestamp: boolean;
     fontSize: number;
   };
@@ -52,9 +55,12 @@ export function saveConfig(theme: string) {
     connType: conn.connType,
     serial: { ...conn.serial },
     tcpudp: { ...conn.tcpudp },
+    profiles: JSON.parse(JSON.stringify(conn.profiles)),
     rx: {
       encoding: rx.encoding,
       rxHexMode: rx.rxHexMode,
+      dualView: rx.dualView,
+      showLineNo: rx.showLineNo,
       showTimestamp: rx.showTimestamp,
       fontSize: rx.fontSize,
     },
@@ -97,6 +103,7 @@ export function loadConfig(themeRef: { value: "light" | "dark" | "system" }) {
     conn.connType = d.connType ?? "serial";
     Object.assign(conn.serial, d.serial);
     Object.assign(conn.tcpudp, d.tcpudp);
+    if (d.profiles) conn.profiles = d.profiles as any;
     Object.assign(rx, d.rx);
     Object.assign(tx, d.tx);
     if (d.proto) {
@@ -132,8 +139,11 @@ export function initPersistence(themeRef: { value: "light" | "dark" | "system" }
       () => conn.connType,
       () => conn.serial,
       () => conn.tcpudp,
+      () => conn.profiles,
       () => rx.encoding,
       () => rx.rxHexMode,
+      () => rx.dualView,
+      () => rx.showLineNo,
       () => rx.showTimestamp,
       () => rx.fontSize,
       () => tx.sendHexMode,

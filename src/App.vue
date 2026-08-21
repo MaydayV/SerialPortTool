@@ -243,6 +243,18 @@ onMounted(() => {
             <button class="mini-btn danger" @click="resetAll">恢复默认设置</button>
           </div>
         </div>
+        <div v-if="conn.profiles.length" class="setting-row col">
+          <span class="setting-label">连接收藏</span>
+          <div class="profile-list">
+            <div v-for="p in conn.profiles" :key="p.name" class="profile-item">
+              <span class="profile-name">{{ p.name }}</span>
+              <span class="profile-detail">
+                {{ p.connType === "serial" ? `串口 ${p.serial.port} @ ${p.serial.baudrate}` : `${p.tcpudp.protocol.toUpperCase()} ${p.tcpudp.mode} ${p.tcpudp.mode === "client" ? p.tcpudp.target : ":" + p.tcpudp.port}` }}
+              </span>
+              <button class="mini-btn danger" @click="conn.removeProfile(p.name)">删除</button>
+            </div>
+          </div>
+        </div>
         <div class="settings-foot">
           设置自动保存 · 快捷键：空格 连接 · H HEX · T 时间戳 · P 暂停 · Esc
           清空 · F5 刷新串口
@@ -793,6 +805,40 @@ select optgroup {
 .setting-actions {
   display: flex;
   gap: 8px;
+}
+.setting-row.col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.profile-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+}
+.profile-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 80px;
+}
+.profile-detail {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .settings-foot {
   border-top: 1px solid var(--panel-border);

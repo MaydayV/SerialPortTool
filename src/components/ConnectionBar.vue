@@ -154,6 +154,43 @@ onMounted(() => {
       </label>
     </template>
 
+    <!-- 连接收藏 -->
+    <div class="profile-box">
+      <select
+        class="ctl profile-sel"
+        :value="''"
+        @change="
+          (e: Event) => {
+            const v = (e.target as HTMLSelectElement).value;
+            if (v) {
+              store.applyProfile(v);
+              (e.target as HTMLSelectElement).value = '';
+            }
+          }
+        "
+        title="已保存的连接配置"
+      >
+        <option value="" disabled>连接收藏</option>
+        <option v-for="p in store.profiles" :key="p.name" :value="p.name">
+          {{ p.name }}
+        </option>
+      </select>
+      <input
+        v-model="store.profileName"
+        class="ctl profile-input"
+        placeholder="收藏名"
+        @keyup.enter="store.saveProfile()"
+      />
+      <button
+        class="opt"
+        title="保存当前连接参数为收藏"
+        :disabled="!store.profileName.trim()"
+        @click="store.saveProfile()"
+      >
+        收藏
+      </button>
+    </div>
+
     <!-- 状态 + 开关 -->
     <div class="status-area">
       <span class="dot" :style="{ background: statusColor }"></span>
@@ -255,6 +292,18 @@ onMounted(() => {
 }
 .port-select {
   min-width: 180px;
+}
+.profile-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.profile-sel {
+  max-width: 130px;
+}
+.profile-input {
+  max-width: 100px;
 }
 .target-input {
   min-width: 180px;

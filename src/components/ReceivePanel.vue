@@ -84,6 +84,16 @@ async function scrollToBottomNow() {
   }
 }
 
+function onTogglePause() {
+  store.togglePause();
+  if (store.paused) {
+    store.autoScroll = false; // 暂停=停止跟随
+  } else {
+    store.autoScroll = true;
+    scrollToBottomNow();
+  }
+}
+
 /** 复制行内容到剪贴板 */
 let copyTip: ReturnType<typeof setTimeout> | null = null;
 const copyToast = ref("");
@@ -146,6 +156,22 @@ function demoData() {
         </button>
         <button
           class="tool-btn"
+          :class="{ active: store.dualView }"
+          @click="store.dualView = !store.dualView"
+          title="HEX + ASCII 双栏对照"
+        >
+          双栏
+        </button>
+        <button
+          class="tool-btn"
+          :class="{ active: store.showLineNo }"
+          @click="store.showLineNo = !store.showLineNo"
+          title="行号"
+        >
+          行号
+        </button>
+        <button
+          class="tool-btn"
           :class="{ active: store.showTimestamp }"
           @click="store.showTimestamp = !store.showTimestamp"
           title="时间戳"
@@ -155,8 +181,8 @@ function demoData() {
         <button
           class="tool-btn"
           :class="{ active: store.paused }"
-          @click="store.togglePause()"
-          title="暂停接收"
+          @click="onTogglePause"
+          title="暂停滚动（数据继续接收）"
         >
           {{ store.paused ? "▶ 继续" : "⏸ 暂停" }}
         </button>
@@ -198,7 +224,7 @@ function demoData() {
     </div>
 
     <div v-if="store.paused" class="pause-banner">
-      ⏸ 已暂停接收（新数据将被丢弃）
+      ⏸ 已暂停滚动 · 数据仍在接收缓冲（点击「▶ 继续」回到最新）
     </div>
     <div v-if="store.filterText" class="filter-banner">
       过滤中：仅显示匹配 "{{ store.filterText }}" 的行（{{
@@ -241,10 +267,18 @@ function demoData() {
             <span v-if="store.showTimestamp" class="ts">
               {{ formatTime(entry.entry.ts) }}
             </span>
+            <span v-if="store.showLineNo" class="lineno">
+              {{ entry.index + 1 }}
+            </span>
             <span class="dir">
               {{ entry.entry.dir === "rx" ? "⬇" : "⬆" }}
             </span>
-            <template v-if="store.rxHexMode">
+            <template v-if="store.dualView">
+              <code class="hex dual-hex">{{ entry.entry.hex }}</code>
+              <span class="dual-sep"></span>
+              <span class="dual-ascii">{{ entry.entry.ascii }}</span>
+            </template>
+            <template v-else-if="store.rxHexMode">
               <code class="hex">{{ entry.entry.hex }}</code>
             </template>
             <template v-else>
@@ -458,6 +492,35 @@ function demoData() {
 .dir {
   color: var(--text-tertiary);
   flex-shrink: 0;
+}
+.lineno {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  min-width: 44px;
+  flex-shrink: 0;
+  text-align: right;
+  user-select: none;
+}
+.dual-hex {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+.dual-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--panel-border);
+  flex-shrink: 0;
+}
+.dual-ascii {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+  white-space: nowrap;
 }
 .hex {
   color: var(--text-primary);

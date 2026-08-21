@@ -34,6 +34,43 @@ export const useConnStore = defineStore("conn", () => {
     reconnect_interval: 1,
   });
 
+  // ===== 连接配置收藏 =====
+  interface ConnProfile {
+    name: string;
+    connType: "serial" | "tcpudp";
+    serial: SerialConfig;
+    tcpudp: TcpUdpConfig;
+  }
+  const profiles = ref<ConnProfile[]>([]);
+  const profileName = ref(""); // 收藏命名输入
+
+  function saveProfile() {
+    const name = profileName.value.trim();
+    if (!name) return;
+    profiles.value = [
+      {
+        name,
+        connType: connType.value,
+        serial: JSON.parse(JSON.stringify(serial.value)),
+        tcpudp: JSON.parse(JSON.stringify(tcpudp.value)),
+      },
+      ...profiles.value.filter((p) => p.name !== name),
+    ];
+    profileName.value = "";
+  }
+
+  function applyProfile(name: string) {
+    const p = profiles.value.find((x) => x.name === name);
+    if (!p) return;
+    connType.value = p.connType;
+    Object.assign(serial.value, p.serial);
+    Object.assign(tcpudp.value, p.tcpudp);
+  }
+
+  function removeProfile(name: string) {
+    profiles.value = profiles.value.filter((x) => x.name !== name);
+  }
+
   async function refreshPorts() {
     try {
       ports.value = await api.listPorts();
@@ -104,6 +141,11 @@ export const useConnStore = defineStore("conn", () => {
     lastError,
     serial,
     tcpudp,
+    profiles,
+    profileName,
+    saveProfile,
+    applyProfile,
+    removeProfile,
     refreshPorts,
     setupListeners,
     open,
