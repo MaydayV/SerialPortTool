@@ -719,10 +719,11 @@ select optgroup {
 }
 .panel.left {
   flex: 11;
+  min-width: 0;
 }
 .panel.right {
   flex: 4;
-  min-width: 320px;
+  min-width: 240px;
 }
 .panel.full {
   flex: 1;
