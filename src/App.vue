@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
 import ConnectionBar from "./components/ConnectionBar.vue";
+import ProtocolPanel from "./components/ProtocolPanel.vue";
 import ReceivePanel from "./components/ReceivePanel.vue";
 import SendPanel from "./components/SendPanel.vue";
 import { useConnStore } from "./stores/conn";
@@ -23,6 +24,7 @@ onMounted(() => {
 <template>
   <div class="app-root">
     <ConnectionBar />
+    <ProtocolPanel />
     <main class="content">
       <div class="workbench">
         <div class="panel left">

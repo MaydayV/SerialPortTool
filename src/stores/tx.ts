@@ -4,6 +4,7 @@ import { ref } from "vue";
 import { api } from "../api";
 import { useConnStore } from "./conn";
 import { useRxStore } from "./rx";
+import { useProtocolStore } from "./protocol";
 import { hexToBytes, escapeToBytes } from "../utils/bytes";
 
 export const useTxStore = defineStore("tx", () => {
@@ -51,8 +52,11 @@ export const useTxStore = defineStore("tx", () => {
     const rx = useRxStore();
     if (!conn.isConnected()) return false;
     try {
-      await api.connSend(Array.from(bytes));
-      // 发送回显到接收区（方向 tx）
+      // 协议组帧（若启用）
+      const proto = useProtocolStore();
+      const out = proto.processTx(bytes);
+      await api.connSend(Array.from(out));
+      // 发送回显到接收区（方向 tx，回显原始负载）
       rx.append(bytes, "tx");
       return true;
     } catch (e) {

@@ -10,6 +10,7 @@ import {
   formatBytes,
   type ColorSpan,
 } from "../utils/bytes";
+import { useProtocolStore } from "./protocol";
 
 export interface RxEntry {
   id: number;
@@ -111,7 +112,17 @@ export const useRxStore = defineStore("rx", () => {
   /** 接收事件监听（由 App 初始化时调用一次） */
   async function setup() {
     await listen<{ data: number[]; ts: number }>("rx-data", (e) => {
-      append(new Uint8Array(e.payload.data), "rx", e.payload.ts);
+      const raw = new Uint8Array(e.payload.data);
+      // 协议解帧（若启用）
+      const proto = useProtocolStore();
+      const { frames, enabled } = proto.processRx(raw);
+      if (!enabled) {
+        append(raw, "rx", e.payload.ts);
+      } else {
+        for (const f of frames) {
+          append(f, "rx", e.payload.ts);
+        }
+      }
     });
   }
 
