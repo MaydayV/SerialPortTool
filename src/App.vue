@@ -67,7 +67,7 @@ onMounted(() => {
       </button>
       <div class="tab-spacer"></div>
       <button class="theme-btn" @click="toggleTheme" :title="theme === 'light' ? '切换到深色' : '切换到浅色'">
-        {{ theme === "light" ? "🌙" : "☀️" }}
+        {{ theme === "light" ? "深色模式" : "浅色模式" }}
       </button>
     </nav>
     <main class="content">
