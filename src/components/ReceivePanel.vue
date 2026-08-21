@@ -84,6 +84,11 @@ async function scrollToBottomNow() {
   }
 }
 
+function setView(v: "text" | "hex" | "ascii") {
+  store.rxHexMode = v === "hex";
+  store.asciiMode = v === "ascii";
+}
+
 function onTogglePause() {
   store.togglePause();
   if (store.paused) {
@@ -148,19 +153,19 @@ function demoData() {
       <div class="left">
         <button
           class="tool-btn"
-          :class="{ active: store.rxHexMode }"
-          @click="store.rxHexMode = !store.rxHexMode"
+          :class="{ active: store.rxHexMode && !store.asciiMode }"
+          @click="setView('hex')"
           title="HEX 显示"
         >
           HEX
         </button>
         <button
           class="tool-btn"
-          :class="{ active: store.dualView }"
-          @click="store.dualView = !store.dualView"
-          title="HEX + ASCII 双栏对照"
+          :class="{ active: store.asciiMode }"
+          @click="setView('ascii')"
+          title="ASCII 显示（不可打印字节显示为 .）"
         >
-          双栏
+          ASCII
         </button>
         <button
           class="tool-btn"
@@ -273,13 +278,11 @@ function demoData() {
             <span class="dir">
               {{ entry.entry.dir === "rx" ? "⬇" : "⬆" }}
             </span>
-            <template v-if="store.dualView">
-              <code class="hex dual-hex">{{ entry.entry.hex }}</code>
-              <span class="dual-sep"></span>
-              <span class="dual-ascii">{{ entry.entry.ascii }}</span>
-            </template>
-            <template v-else-if="store.rxHexMode">
+            <template v-if="store.rxHexMode && !store.asciiMode">
               <code class="hex">{{ entry.entry.hex }}</code>
+            </template>
+            <template v-else-if="store.asciiMode">
+              <code class="hex ascii-view">{{ entry.entry.ascii }}</code>
             </template>
             <template v-else>
               <span
@@ -501,26 +504,8 @@ function demoData() {
   text-align: right;
   user-select: none;
 }
-.dual-hex {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.ascii-view {
   color: var(--text-primary);
-}
-.dual-sep {
-  width: 1px;
-  height: 14px;
-  background: var(--panel-border);
-  flex-shrink: 0;
-}
-.dual-ascii {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-primary);
-  white-space: nowrap;
 }
 .hex {
   color: var(--text-primary);

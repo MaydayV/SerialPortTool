@@ -16,7 +16,7 @@ interface Persisted {
   rx: {
     encoding: string;
     rxHexMode: boolean;
-    dualView: boolean;
+    asciiMode: boolean;
     showLineNo: boolean;
     showTimestamp: boolean;
     fontSize: number;
@@ -59,7 +59,7 @@ export function saveConfig(theme: string) {
     rx: {
       encoding: rx.encoding,
       rxHexMode: rx.rxHexMode,
-      dualView: rx.dualView,
+      asciiMode: rx.asciiMode,
       showLineNo: rx.showLineNo,
       showTimestamp: rx.showTimestamp,
       fontSize: rx.fontSize,
@@ -142,7 +142,7 @@ export function initPersistence(themeRef: { value: "light" | "dark" | "system" }
       () => conn.profiles,
       () => rx.encoding,
       () => rx.rxHexMode,
-      () => rx.dualView,
+      () => rx.asciiMode,
       () => rx.showLineNo,
       () => rx.showTimestamp,
       () => rx.fontSize,

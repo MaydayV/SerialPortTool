@@ -31,7 +31,7 @@ export const useRxStore = defineStore("rx", () => {
   const entries = ref<RxEntry[]>([]);
   const encoding = ref("UTF-8");
   const rxHexMode = ref(false); // 接收显示 hex
-  const dualView = ref(false); // 双栏显示：HEX + ASCII 对照
+  const asciiMode = ref(false); // 接收显示 ascii（字节映射，与 hex 互斥）
   const showLineNo = ref(false); // 行号
   const showTimestamp = ref(false);
   const autoScroll = ref(true);
@@ -180,7 +180,7 @@ export const useRxStore = defineStore("rx", () => {
     entries,
     encoding,
     rxHexMode,
-    dualView,
+    asciiMode,
     showLineNo,
     showTimestamp,
     autoScroll,
