@@ -61,12 +61,17 @@ onMounted(() => {
 
     <!-- 串口参数 -->
     <template v-if="store.connType === 'serial'">
-      <select v-model="store.serial.port" class="ctl port-select">
-        <option value="" disabled>选择串口</option>
+      <input
+        v-model="store.serial.port"
+        class="ctl port-select"
+        list="port-list"
+        placeholder="选择或输入串口"
+      />
+      <datalist id="port-list">
         <option v-for="p in store.ports" :key="p.name" :value="p.name">
-          {{ p.name }}{{ p.desc ? " · " + p.desc : "" }}
+          {{ p.desc || "" }}
         </option>
-      </select>
+      </datalist>
       <button class="opt" title="刷新串口列表" @click="store.refreshPorts()">
         刷新
       </button>
