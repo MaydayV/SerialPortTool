@@ -167,10 +167,10 @@ const isPassThrough = computed(
 <style scoped>
 .proto-bar {
   padding: 6px 16px;
-  background: rgba(255, 255, 255, 0.5);
+  background: var(--bar-bg);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid var(--seg-bg);
   font-size: 13px;
 }
 .row1 {
@@ -181,14 +181,14 @@ const isPassThrough = computed(
 }
 .label {
   font-weight: 600;
-  color: #48484a;
+  color: var(--text-secondary);
 }
 .tpl-sel {
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 12.5px;
-  background: #fff;
+  background: var(--control-bg);
   min-width: 160px;
 }
 .switch {
@@ -196,14 +196,14 @@ const isPassThrough = computed(
   align-items: center;
   gap: 4px;
   font-size: 12.5px;
-  color: #48484a;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .switch input {
   accent-color: #0a84ff;
 }
 .desc {
-  color: #8e8e93;
+  color: var(--text-tertiary);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -214,19 +214,19 @@ const isPassThrough = computed(
   flex: 1;
 }
 .new-name {
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 12.5px;
   width: 110px;
 }
 .mini {
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background: #fff;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   border-radius: 6px;
   padding: 4px 10px;
   font-size: 12px;
-  color: #48484a;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .mini:hover {
@@ -249,7 +249,7 @@ const isPassThrough = computed(
 .edit-form {
   margin-top: 8px;
   padding: 12px;
-  background: rgba(0, 0, 0, 0.03);
+  background: var(--edit-bg);
   border-radius: 10px;
   display: flex;
   flex-direction: column;
@@ -265,15 +265,15 @@ const isPassThrough = computed(
 .field label {
   min-width: 70px;
   font-size: 12.5px;
-  color: #48484a;
+  color: var(--text-secondary);
 }
 .field input:not([type="checkbox"]),
 .field select {
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 12.5px;
-  background: #fff;
+  background: var(--control-bg);
 }
 .field .num {
   width: 56px;

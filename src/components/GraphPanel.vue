@@ -168,12 +168,12 @@ function downloadCsv() {
   font-size: 13px;
 }
 .tool-btn {
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background: #fff;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   border-radius: 6px;
   padding: 3px 10px;
   font-size: 12px;
-  color: #48484a;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .tool-btn:hover {
@@ -190,11 +190,11 @@ function downloadCsv() {
   color: #ff3b30;
 }
 .ctl {
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   padding: 3px 6px;
   font-size: 12px;
-  background: #fff;
+  background: var(--control-bg);
 }
 .header-input {
   width: 110px;
@@ -204,7 +204,7 @@ function downloadCsv() {
 }
 .stats {
   font-size: 12px;
-  color: #6e6e73;
+  color: var(--text-secondary);
 }
 .spacer {
   flex: 1;

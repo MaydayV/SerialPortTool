@@ -18,7 +18,7 @@ const statusColor = computed(() => {
     case "lose":
       return "#ff3b30";
     default:
-      return "#8e8e93";
+      return "var(--text-tertiary)";
   }
 });
 
@@ -144,7 +144,7 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  background: rgba(255, 255, 255, 0.65);
+  background: var(--bar-bg);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
@@ -153,7 +153,7 @@ onMounted(() => {
 
 .seg {
   display: flex;
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--seg-bg);
   border-radius: 8px;
   padding: 2px;
 }
@@ -163,23 +163,23 @@ onMounted(() => {
   padding: 5px 14px;
   border-radius: 6px;
   font-size: 13px;
-  color: #48484a;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .seg button.active {
-  background: #fff;
-  color: #1d1d1f;
+  background: var(--control-bg);
+  color: var(--text-primary);
   font-weight: 600;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
 }
 
 .ctl {
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background: #fff;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 13px;
-  color: #1d1d1f;
+  color: var(--text-primary);
   outline: none;
   max-width: 220px;
 }
@@ -239,7 +239,7 @@ onMounted(() => {
   flex-basis: 100%;
 }
 .status-msg {
-  color: #6e6e73;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 </style>

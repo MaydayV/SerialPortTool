@@ -163,12 +163,12 @@ function onScheduleChange() {
   gap: 5px;
 }
 .opt {
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background: #fff;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   border-radius: 6px;
   padding: 2px 8px;
   font-size: 11.5px;
-  color: #48484a;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .opt.active {
@@ -178,14 +178,14 @@ function onScheduleChange() {
 }
 .interval-input {
   width: 60px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   padding: 2px 6px;
   font-size: 11.5px;
 }
 .unit {
   font-size: 11px;
-  color: #6e6e73;
+  color: var(--text-secondary);
 }
 .send-area {
   flex: 1;
@@ -196,8 +196,8 @@ function onScheduleChange() {
   padding: 10px 12px;
   font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 13px;
-  background: #fff;
-  color: #1d1d1f;
+  background: var(--control-bg);
+  color: var(--text-primary);
   line-height: 1.5;
 }
 .history-row {
@@ -205,7 +205,7 @@ function onScheduleChange() {
 }
 .history-sel {
   width: 100%;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   padding: 3px 6px;
   font-size: 12px;
@@ -223,14 +223,14 @@ function onScheduleChange() {
 }
 .custom-input {
   flex: 1;
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   padding: 3px 8px;
   font-size: 12px;
 }
 .mini-btn {
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background: #fff;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   border-radius: 6px;
   padding: 3px 8px;
   font-size: 11.5px;
@@ -269,13 +269,13 @@ function onScheduleChange() {
   cursor: not-allowed;
 }
 .action-btn {
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background: #fff;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   border-radius: 8px;
   padding: 8px 14px;
   font-size: 12.5px;
   cursor: pointer;
-  color: #48484a;
+  color: var(--text-secondary);
 }
 .action-btn:hover {
   border-color: #0a84ff;
@@ -283,7 +283,7 @@ function onScheduleChange() {
 }
 .file-name {
   font-size: 12px;
-  color: #6e6e73;
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
