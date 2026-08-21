@@ -552,6 +552,54 @@ select optgroup {
   cursor: not-allowed;
 }
 
+/* 折叠更多菜单 */
+.more-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.more-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  min-width: 140px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.more-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: left;
+  width: 100%;
+}
+.more-item:hover {
+  background: var(--btn-hover);
+}
+.more-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.more-item.on {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* 主按钮 */
 .toggle-btn, .send-btn {
   background: var(--btn-primary-bg);

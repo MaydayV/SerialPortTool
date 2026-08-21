@@ -6,8 +6,18 @@ import { useConnStore } from "../stores/conn";
 import { formatTime } from "../utils/bytes";
 
 const store = useRxStore();
+const rxMoreOpen = ref(false);
 const conn = useConnStore();
 const connStatus = computed(() => conn.status);
+
+// 点击菜单外部时关闭
+function onDocClick(e: MouseEvent) {
+  if (rxMoreOpen.value && !(e.target as HTMLElement).closest?.(".more-wrap")) {
+    rxMoreOpen.value = false;
+  }
+}
+onMounted(() => document.addEventListener("click", onDocClick));
+onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
 
 const scrollEl = ref<HTMLDivElement | null>(null);
 const viewportEl = ref<HTMLDivElement | null>(null);
@@ -169,22 +179,6 @@ function demoData() {
         </button>
         <button
           class="tool-btn"
-          :class="{ active: store.showLineNo }"
-          @click="store.showLineNo = !store.showLineNo"
-          title="行号"
-        >
-          行号
-        </button>
-        <button
-          class="tool-btn"
-          :class="{ active: store.showTimestamp }"
-          @click="store.showTimestamp = !store.showTimestamp"
-          title="时间戳"
-        >
-          时间戳
-        </button>
-        <button
-          class="tool-btn"
           :class="{ active: store.paused }"
           @click="onTogglePause"
           title="暂停滚动（数据继续接收）"
@@ -199,6 +193,35 @@ function demoData() {
           <option>GB18030</option>
           <option>UTF-16</option>
         </select>
+        <div class="more-wrap">
+          <button
+            class="tool-btn"
+            :class="{ active: rxMoreOpen }"
+            @click="rxMoreOpen = !rxMoreOpen"
+            title="更多选项"
+          >
+            ⋯ 更多
+          </button>
+          <div v-if="rxMoreOpen" class="more-menu">
+            <button
+              class="more-item"
+              :class="{ on: store.showLineNo }"
+              @click="store.showLineNo = !store.showLineNo; rxMoreOpen = false"
+            >
+              行号 {{ store.showLineNo ? "✓" : "" }}
+            </button>
+            <button
+              class="more-item"
+              :class="{ on: store.showTimestamp }"
+              @click="store.showTimestamp = !store.showTimestamp; rxMoreOpen = false"
+            >
+              时间戳 {{ store.showTimestamp ? "✓" : "" }}
+            </button>
+            <button class="more-item" @click="demoData(); rxMoreOpen = false">
+              注入模拟数据
+            </button>
+          </div>
+        </div>
       </div>
       <div class="right">
         <input

@@ -1,10 +1,25 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted, onBeforeUnmount } from "vue";
 import { useTxStore } from "../stores/tx";
 import { useConnStore } from "../stores/conn";
 
 const tx = useTxStore();
 const conn = useConnStore();
+const txMoreOpen = ref(false); // 工具栏更多菜单
+const txActMoreOpen = ref(false); // 操作区更多菜单
+
+// 点击菜单外部时关闭
+function onDocClick(e: MouseEvent) {
+  if (
+    (txMoreOpen.value || txActMoreOpen.value) &&
+    !(e.target as HTMLElement).closest?.(".more-wrap")
+  ) {
+    txMoreOpen.value = false;
+    txActMoreOpen.value = false;
+  }
+}
+onMounted(() => document.addEventListener("click", onDocClick));
+onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const selectedFile = ref("");
@@ -112,22 +127,6 @@ function onScheduleChange() {
         >
           转义
         </button>
-        <button
-          class="opt"
-          :class="{ active: tx.appendNewline }"
-          @click="tx.appendNewline = !tx.appendNewline"
-          title="发送时追加换行"
-        >
-          +换行
-        </button>
-        <button
-          class="opt"
-          :class="{ active: tx.scheduled }"
-          @click="tx.toggleScheduled()"
-          title="定时发送"
-        >
-          定时
-        </button>
         <input
           v-if="tx.scheduled"
           v-model.number="tx.scheduledInterval"
@@ -137,6 +136,32 @@ function onScheduleChange() {
           @change="onScheduleChange"
         />
         <span v-if="tx.scheduled" class="unit">ms</span>
+        <div class="more-wrap">
+          <button
+            class="opt"
+            :class="{ active: txMoreOpen }"
+            @click="txMoreOpen = !txMoreOpen"
+            title="更多选项"
+          >
+            ⋯
+          </button>
+          <div v-if="txMoreOpen" class="more-menu">
+            <button
+              class="more-item"
+              :class="{ on: tx.appendNewline }"
+              @click="tx.appendNewline = !tx.appendNewline; txMoreOpen = false"
+            >
+              +换行 {{ tx.appendNewline ? "✓" : "" }}
+            </button>
+            <button
+              class="more-item"
+              :class="{ on: tx.scheduled }"
+              @click="tx.toggleScheduled(); txMoreOpen = false"
+            >
+              定时发送 {{ tx.scheduled ? "✓" : "" }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -191,23 +216,41 @@ function onScheduleChange() {
       <button class="send-btn" :disabled="!conn.isConnected()" @click="onSend">
         发送
       </button>
-      <button
-        class="action-btn"
-        title="把当前输入框内容存为快捷项"
-        :disabled="!tx.sendText.trim()"
-        @click="tx.addCustomItem(tx.sendText)"
-      >
-        ＋存入快捷
-      </button>
-      <button class="action-btn" @click="tx.addCustomItem()">＋快捷</button>
-      <button class="action-btn" @click="pickFile">发送文件</button>
+      <div class="more-wrap">
+        <button
+          class="action-btn"
+          :class="{ active: txActMoreOpen }"
+          @click="txActMoreOpen = !txActMoreOpen"
+          title="更多发送选项"
+        >
+          ⋯
+        </button>
+        <div v-if="txActMoreOpen" class="more-menu">
+          <button
+            class="more-item"
+            :disabled="!tx.sendText.trim()"
+            @click="tx.addCustomItem(tx.sendText); txActMoreOpen = false"
+          >
+            ＋存入快捷
+          </button>
+          <button
+            class="more-item"
+            @click="tx.addCustomItem(); txActMoreOpen = false"
+          >
+            ＋快捷
+          </button>
+          <button class="more-item" @click="pickFile(); txActMoreOpen = false">
+            发送文件
+          </button>
+        </div>
+      </div>
+      <span v-if="selectedFile" class="file-name">{{ selectedFile }}</span>
       <input
         ref="fileInput"
         type="file"
         style="display: none"
         @change="onFileChange"
       />
-      <span v-if="selectedFile" class="file-name">{{ selectedFile }}</span>
     </div>
   </div>
 </template>
