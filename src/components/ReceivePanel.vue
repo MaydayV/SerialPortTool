@@ -328,6 +328,8 @@ function demoData() {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
   padding: 6px 10px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.07);
 }
@@ -335,6 +337,7 @@ function demoData() {
 .right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 .tool-btn {

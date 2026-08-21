@@ -235,6 +235,7 @@ function onScheduleChange() {
   display: flex;
   align-items: center;
   gap: 5px;
+  flex-wrap: wrap;
 }
 .opt {
   border: 1px solid var(--control-border);
@@ -326,8 +327,9 @@ function onScheduleChange() {
 }
 .actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
+  flex-wrap: wrap;
   padding: 8px 10px;
   border-top: 1px solid rgba(0, 0, 0, 0.07);
 }
@@ -336,10 +338,12 @@ function onScheduleChange() {
   color: #fff;
   border: none;
   border-radius: 8px;
-  padding: 8px 28px;
+  padding: 8px 20px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .send-btn:hover {
   background: #0a7ae0;
@@ -352,10 +356,12 @@ function onScheduleChange() {
   border: 1px solid var(--control-border);
   background: var(--control-bg);
   border-radius: 8px;
-  padding: 8px 14px;
+  padding: 8px 9px;
   font-size: 12.5px;
   cursor: pointer;
   color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .action-btn:hover {
   border-color: #0a84ff;

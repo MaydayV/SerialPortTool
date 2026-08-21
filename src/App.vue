@@ -525,6 +525,8 @@ select optgroup {
   color: var(--text-secondary);
   border-radius: var(--radius-md);
   box-shadow: none;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 .tool-btn:hover, .opt:hover, .mini:hover, .action-btn:hover, .theme-btn:hover {
@@ -768,6 +770,8 @@ select optgroup {
   padding: 4px 12px;
   font-size: 12.5px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .mini-btn:hover {
   background: var(--btn-hover);
