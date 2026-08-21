@@ -1,0 +1,292 @@
+<script setup lang="ts">
+import { ref } from "vue";
+import { useTxStore } from "../stores/tx";
+import { useConnStore } from "../stores/conn";
+
+const tx = useTxStore();
+const conn = useConnStore();
+
+const fileInput = ref<HTMLInputElement | null>(null);
+const selectedFile = ref("");
+
+async function onSend() {
+  await tx.send();
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    onSend();
+  }
+}
+
+function pickFile() {
+  fileInput.value?.click();
+}
+
+async function onFileChange(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  selectedFile.value = file.name;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  tx.setFileReader(async () => bytes);
+  await tx.sendFile(file.name);
+  input.value = "";
+}
+
+function onScheduleChange() {
+  tx.updateInterval();
+}
+</script>
+
+<template>
+  <div class="send-panel">
+    <div class="toolbar">
+      <span class="title">发送</span>
+      <div class="opts">
+        <button
+          class="opt"
+          :class="{ active: tx.sendHexMode }"
+          @click="tx.sendHexMode = !tx.sendHexMode"
+          title="HEX 发送"
+        >
+          HEX
+        </button>
+        <button
+          class="opt"
+          :class="{ active: tx.escapeMode }"
+          @click="tx.escapeMode = !tx.escapeMode"
+          title="转义模式 \\n \\r \\xHH"
+        >
+          转义
+        </button>
+        <button
+          class="opt"
+          :class="{ active: tx.appendNewline }"
+          @click="tx.appendNewline = !tx.appendNewline"
+          title="发送时追加换行"
+        >
+          +换行
+        </button>
+        <button
+          class="opt"
+          :class="{ active: tx.scheduled }"
+          @click="tx.toggleScheduled()"
+          title="定时发送"
+        >
+          定时
+        </button>
+        <input
+          v-if="tx.scheduled"
+          v-model.number="tx.scheduledInterval"
+          type="number"
+          min="10"
+          class="interval-input"
+          @change="onScheduleChange"
+        />
+        <span v-if="tx.scheduled" class="unit">ms</span>
+      </div>
+    </div>
+
+    <textarea
+      v-model="tx.sendText"
+      class="send-area"
+      placeholder="输入要发送的内容...（Ctrl+Enter 发送）"
+      @keydown="onKeydown"
+    ></textarea>
+
+    <div class="history-row" v-if="tx.history.length">
+      <select
+        class="history-sel"
+        @change="
+          (e: Event) => {
+            const v = (e.target as HTMLSelectElement).value;
+            if (v) tx.sendText = v;
+          }
+        "
+      >
+        <option value="">历史记录 ({{ tx.history.length }})</option>
+        <option v-for="h in tx.history" :key="h" :value="h">{{ h }}</option>
+      </select>
+    </div>
+
+    <div class="custom-row" v-if="tx.customItems.length">
+      <div v-for="item in tx.customItems" :key="item.id" class="custom-item">
+        <input v-model="item.text" class="custom-input" placeholder="快捷内容" />
+        <button class="mini-btn" @click="tx.sendCustom(item.id)">发送</button>
+        <button class="mini-btn danger" @click="tx.removeCustomItem(item.id)">
+          ✕
+        </button>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="send-btn" :disabled="!conn.isConnected()" @click="onSend">
+        发送
+      </button>
+      <button class="action-btn" @click="tx.addCustomItem()">＋快捷</button>
+      <button class="action-btn" @click="pickFile">发送文件</button>
+      <input
+        ref="fileInput"
+        type="file"
+        style="display: none"
+        @change="onFileChange"
+      />
+      <span v-if="selectedFile" class="file-name">{{ selectedFile }}</span>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.send-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border-left: 1px solid rgba(0, 0, 0, 0.07);
+}
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+}
+.title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.opts {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.opt {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #fff;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  color: #48484a;
+  cursor: pointer;
+}
+.opt.active {
+  background: #0a84ff;
+  color: #fff;
+  border-color: #0a84ff;
+}
+.interval-input {
+  width: 60px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 11.5px;
+}
+.unit {
+  font-size: 11px;
+  color: #6e6e73;
+}
+.send-area {
+  flex: 1;
+  min-height: 80px;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: 10px 12px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  background: #fff;
+  color: #1d1d1f;
+  line-height: 1.5;
+}
+.history-row {
+  padding: 0 10px 6px;
+}
+.history-sel {
+  width: 100%;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.custom-row {
+  padding: 0 10px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.custom-item {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.custom-input {
+  flex: 1;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.mini-btn {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #fff;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.mini-btn:hover {
+  border-color: #0a84ff;
+  color: #0a84ff;
+}
+.mini-btn.danger:hover {
+  border-color: #ff3b30;
+  color: #ff3b30;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-top: 1px solid rgba(0, 0, 0, 0.07);
+}
+.send-btn {
+  background: #0a84ff;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 28px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.send-btn:hover {
+  background: #0a7ae0;
+}
+.send-btn:disabled {
+  background: #c7c7cc;
+  cursor: not-allowed;
+}
+.action-btn {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  cursor: pointer;
+  color: #48484a;
+}
+.action-btn:hover {
+  border-color: #0a84ff;
+  color: #0a84ff;
+}
+.file-name {
+  font-size: 12px;
+  color: #6e6e73;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+}
+</style>

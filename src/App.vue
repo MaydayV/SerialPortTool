@@ -1,15 +1,36 @@
 <script setup lang="ts">
+import { onMounted } from "vue";
 import ConnectionBar from "./components/ConnectionBar.vue";
+import ReceivePanel from "./components/ReceivePanel.vue";
+import SendPanel from "./components/SendPanel.vue";
+import { useConnStore } from "./stores/conn";
+import { useRxStore } from "./stores/rx";
+import { useTxStore } from "./stores/tx";
+
+const conn = useConnStore();
+const rx = useRxStore();
+const tx = useTxStore();
+
+onMounted(() => {
+  conn.setupListeners();
+  conn.refreshPorts();
+  rx.setup();
+  // 关闭时清理定时器
+  window.addEventListener("beforeunload", () => tx.stopAll());
+});
 </script>
 
 <template>
   <div class="app-root">
     <ConnectionBar />
     <main class="content">
-      <div class="placeholder">
-        <h1>串口助手 SerialAid</h1>
-        <p>M1 连接层已完成：串口 + TCP/UDP 收发链路</p>
-        <p class="hint">下一步：收发面板（M2）</p>
+      <div class="workbench">
+        <div class="panel left">
+          <ReceivePanel />
+        </div>
+        <div class="panel right">
+          <SendPanel />
+        </div>
       </div>
     </main>
   </div>
@@ -48,31 +69,29 @@ body,
 }
 .content {
   flex: 1;
-  overflow: hidden;
-  padding: 24px;
+  min-height: 0;
+  padding: 12px;
 }
-.placeholder {
+.workbench {
   height: 100%;
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.6);
-  border-radius: 16px;
+  gap: 12px;
+}
+.panel {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-radius: 14px;
   border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  min-height: 0;
 }
-.placeholder h1 {
-  font-size: 22px;
-  font-weight: 700;
-  margin-bottom: 8px;
+.panel.left {
+  flex: 3;
 }
-.placeholder p {
-  color: #6e6e73;
-  margin: 4px 0;
-}
-.placeholder .hint {
-  margin-top: 16px;
-  font-size: 13px;
-  color: #0a84ff;
+.panel.right {
+  flex: 2;
+  min-width: 320px;
 }
 </style>
