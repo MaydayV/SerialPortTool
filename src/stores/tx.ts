@@ -47,6 +47,27 @@ export const useTxStore = defineStore("tx", () => {
     history.value = [t, ...history.value.filter((h) => h !== t)].slice(0, 20);
   }
 
+  /** 删除单条历史 */
+  function removeHistory(t: string) {
+    history.value = history.value.filter((h) => h !== t);
+  }
+
+  /** 清空全部历史 */
+  function clearHistory() {
+    history.value = [];
+  }
+
+  /** 直接发送一条历史记录（按当前 HEX/转义模式解析） */
+  async function sendHistory(t: string) {
+    if (!t) return;
+    const bytes = sendHexMode.value
+      ? hexToBytes(t) ?? new Uint8Array()
+      : escapeMode.value
+        ? escapeToBytes(t)
+        : new TextEncoder().encode(t);
+    await doSend(bytes);
+  }
+
   async function doSend(bytes: Uint8Array): Promise<boolean> {
     const conn = useConnStore();
     const rx = useRxStore();
@@ -157,6 +178,9 @@ export const useTxStore = defineStore("tx", () => {
     sending,
     customItems,
     send,
+    removeHistory,
+    clearHistory,
+    sendHistory,
     toggleScheduled,
     updateInterval,
     addCustomItem,

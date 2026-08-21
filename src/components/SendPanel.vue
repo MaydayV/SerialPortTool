@@ -8,6 +8,7 @@ const conn = useConnStore();
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const selectedFile = ref("");
+const selectedHistory = ref("");
 
 async function onSend() {
   await tx.send();
@@ -17,6 +18,48 @@ function onKeydown(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
     e.preventDefault();
     onSend();
+    return;
+  }
+  // ↑ 键：调出上一条历史（无输入或仅光标移动时）
+  if (e.key === "ArrowUp" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+    const hist = tx.history;
+    if (!hist.length) return;
+    e.preventDefault();
+    const idx = hist.findIndex((h) => h === tx.sendText);
+    const next = idx >= 0 ? hist[(idx + 1) % hist.length] : hist[0];
+    tx.sendText = next;
+  }
+  // ↓ 键：回退到更早/最新记录（循环）
+  if (e.key === "ArrowDown" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+    const hist = tx.history;
+    if (!hist.length) return;
+    e.preventDefault();
+    const idx = hist.findIndex((h) => h === tx.sendText);
+    if (idx <= 0) {
+      tx.sendText = "";
+    } else {
+      tx.sendText = hist[idx - 1];
+    }
+  }
+}
+
+function onHistorySelect() {
+  if (selectedHistory.value) {
+    tx.sendText = selectedHistory.value;
+    // 选中后重置，方便再次选择同一项
+    selectedHistory.value = "";
+  }
+}
+
+async function onSendSelected() {
+  if (!selectedHistory.value) return;
+  await tx.sendHistory(selectedHistory.value);
+}
+
+function onRemoveSelected() {
+  if (selectedHistory.value) {
+    tx.removeHistory(selectedHistory.value);
+    selectedHistory.value = "";
   }
 }
 
@@ -99,16 +142,31 @@ function onScheduleChange() {
     <div class="history-row" v-if="tx.history.length">
       <select
         class="history-sel"
-        @change="
-          (e: Event) => {
-            const v = (e.target as HTMLSelectElement).value;
-            if (v) tx.sendText = v;
-          }
-        "
+        v-model="selectedHistory"
+        @change="onHistorySelect"
       >
-        <option value="">历史记录 ({{ tx.history.length }})</option>
+        <option value="">历史记录 ({{ tx.history.length }}/20)</option>
         <option v-for="h in tx.history" :key="h" :value="h">{{ h }}</option>
       </select>
+      <button
+        class="mini-btn"
+        title="重新发送所选记录"
+        :disabled="!selectedHistory || !conn.isConnected()"
+        @click="onSendSelected"
+      >
+        发送
+      </button>
+      <button
+        class="mini-btn"
+        title="删除所选记录"
+        :disabled="!selectedHistory"
+        @click="onRemoveSelected"
+      >
+        删除
+      </button>
+      <button class="mini-btn" title="清空全部历史" @click="tx.clearHistory()">
+        清空
+      </button>
     </div>
 
     <div class="custom-row" v-if="tx.customItems.length">
@@ -202,13 +260,19 @@ function onScheduleChange() {
 }
 .history-row {
   padding: 0 10px 6px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
 }
 .history-sel {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 1px solid var(--control-border);
   border-radius: 6px;
   padding: 3px 6px;
   font-size: 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
 }
 .custom-row {
   padding: 0 10px 6px;
