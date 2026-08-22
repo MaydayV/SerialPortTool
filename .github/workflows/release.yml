@@ -144,11 +144,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
         shell: bash
         run: |
           set -euo pipefail
           API="repos/${GITHUB_REPOSITORY}"
           gh api "${API}/releases/${RELEASE_ID}" --method PATCH \
+            -F "tag_name=${TAG_NAME}" \
             -F "draft=false" -F "prerelease=false" >/dev/null
           DRAFT=$(gh api "${API}/releases/${RELEASE_ID}" --jq '.draft')
           test "${DRAFT}" = "false"
