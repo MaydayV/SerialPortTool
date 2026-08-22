@@ -32,6 +32,23 @@ jobs:
           echo "tag_name=${TAG}" >> "$GITHUB_OUTPUT"
           echo "使用版本: ${VERSION}，Tag: ${TAG}"
 
+      - name: 确保 Tag 存在
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API="repos/${GITHUB_REPOSITORY}"
+          if ! gh api "${API}/git/ref/tags/${TAG_NAME}" >/dev/null 2>&1; then
+            gh api "${API}/git/refs" --method POST \
+              -f "ref=refs/tags/${TAG_NAME}" \
+              -f "sha=${GITHUB_SHA}" >/dev/null
+            echo "已创建 Tag: ${TAG_NAME}"
+          else
+            echo "Tag 已存在: ${TAG_NAME}"
+          fi
+
       - name: 创建或复用 Release
         id: release
         env:
