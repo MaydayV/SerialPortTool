@@ -7,48 +7,54 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 创建/更新 Release 草稿（版本号取自 package.json）
+  # 创建/复用 Release 草稿（只负责元数据，不在这里编译）
   create-release:
     permissions:
       contents: write
     runs-on: ubuntu-latest
     outputs:
-      release_id: ${{ steps.create-release.outputs.id }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      tag_name: ${{ steps.meta.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Linux 系统依赖
+      - name: 读取版本与 Tag
+        id: meta
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev pkg-config
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v${VERSION}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "使用版本: ${VERSION}，Tag: ${TAG}"
 
-      - name: 安装 Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: 安装 Rust 工具链
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 安装前端依赖
-        run: npm ci
-
-      - name: 读取版本号
-        id: package-version
-        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-
-      - name: 创建 Release
-        id: create-release
-        uses: tauri-apps/tauri-action@v0
+      - name: 创建或复用 Release
+        id: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          # push tag 时用 tag 名；手动触发时用 package.json 版本号
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.package-version.outputs.version) }}
-          releaseName: 'SerialPortTool ${{ steps.package-version.outputs.version }}'
-          releaseBody: '跨平台串口调试助手自动编译产物。请根据平台下载对应安装包。'
-          releaseDraft: true
-          prerelease: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API="repos/${GITHUB_REPOSITORY}"
+          RELEASE_ID=$(gh api "${API}/releases/tags/${TAG_NAME}" --jq '.id' 2>/dev/null || true)
+          if [ -z "${RELEASE_ID}" ]; then
+            RELEASE_ID=$(gh api "${API}/releases" --method POST \
+              -f "tag_name=${TAG_NAME}" \
+              -f "target_commitish=${GITHUB_SHA}" \
+              -f "name=SerialPortTool ${VERSION}" \
+              -f "body=跨平台串口调试助手自动编译产物。请根据平台下载对应安装包。" \
+              -F "draft=true" -F "prerelease=false" --jq '.id')
+            echo "已创建 Release: ${RELEASE_ID}"
+          else
+            echo "复用已有 Release: ${RELEASE_ID}"
+          fi
+          echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
 
   # 三平台矩阵编译
   build-tauri:
@@ -95,6 +101,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # release 已由 create-release 创建（draft），用 tag 定位并上传资产
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0' }}
+          # 使用 create-release 明确输出的 Release ID，避免矩阵任务找不到 draft Release
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
