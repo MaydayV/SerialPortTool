@@ -67,11 +67,15 @@ jobs:
               -f "target_commitish=${GITHUB_SHA}" \
               -f "name=SerialPortTool ${VERSION}" \
               -f "body=跨平台串口调试助手自动编译产物。请根据平台下载对应安装包。" \
-              -F "draft=true" -F "prerelease=false" --jq '.id')
+              -F "draft=false" -F "prerelease=false" --jq '.id')
             echo "已创建 Release: ${RELEASE_ID}"
           else
             echo "复用已有 Release: ${RELEASE_ID}"
           fi
+          # 无论是新建还是复用，都确保最终为公开发布状态
+          gh api "${API}/releases/${RELEASE_ID}" --method PATCH \
+            -F "draft=false" -F "prerelease=false" >/dev/null
+          echo "Release 已设为公开发布"
           echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
 
   # 三平台矩阵编译
