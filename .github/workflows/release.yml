@@ -95,5 +95,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          releaseId: ${{ needs.create-release.outputs.release_id }}
+          # release 已由 create-release 创建（draft），用 tag 定位并上传资产
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0' }}
           args: ${{ matrix.args }}
