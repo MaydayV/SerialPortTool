@@ -20,9 +20,15 @@ function saveEdit() {
   if (!draft.value.name.trim()) return;
   // 若改名且与原模板不同：新增；否则更新
   if (draft.value.name !== store.activeName) {
-    store.addTemplate({ ...draft.value });
+    if (!store.addTemplate({ ...draft.value })) {
+      alert("模板名称已存在或内容无效");
+      return;
+    }
   } else {
-    store.updateTemplate(store.activeName, { ...draft.value });
+    if (!store.updateTemplate(store.activeName, { ...draft.value })) {
+      alert("模板内容无效，请检查 HEX、长度和校验配置");
+      return;
+    }
   }
   editing.value = false;
 }
@@ -31,10 +37,16 @@ function cancelEdit() {
   editing.value = false;
 }
 
+function onTemplateChange(e: Event) {
+  const name = (e.target as HTMLSelectElement).value;
+  store.select(name);
+  editing.value = false;
+}
+
 function addNew() {
   const name = newName.value.trim();
   if (!name) return;
-  store.addTemplate({
+  const created = store.addTemplate({
     name,
     header: "",
     tail: "",
@@ -50,6 +62,10 @@ function addNew() {
     checksumPosition: "tail",
     description: "",
   });
+  if (!created) {
+    alert("模板名称已存在或内容无效");
+    return;
+  }
   newName.value = "";
 }
 
@@ -86,7 +102,10 @@ async function onImportFile(e: Event) {
   const text = await file.text();
   const res = store.importTemplates(text);
   if (res.added || res.replaced) {
-    alert(`导入成功：新增 ${res.added} 个，覆盖 ${res.replaced} 个`);
+    const rejected = res.rejected ? `，拒绝 ${res.rejected} 个坏模板` : "";
+    alert(`导入成功：新增 ${res.added} 个，覆盖 ${res.replaced} 个${rejected}`);
+  } else if (res.rejected) {
+    alert(`导入失败：拒绝 ${res.rejected} 个坏模板`);
   } else {
     alert("导入失败：文件格式不正确");
   }
@@ -105,7 +124,7 @@ function onRemove() {
   <div class="proto-bar">
     <div class="row1">
       <span class="label">协议</span>
-      <select v-model="store.activeName" class="tpl-sel" @change="editing = false">
+      <select :value="store.activeName" class="tpl-sel" @change="onTemplateChange">
         <option v-for="t in store.templates" :key="t.name" :value="t.name">
           {{ t.name }}
         </option>

@@ -42,6 +42,7 @@ export const useRxStore = defineStore("rx", () => {
   const txCount = ref(0);
   const saveLog = ref(false);
   const logPath = ref("");
+  const logError = ref("");
   const filterText = ref(""); // 接收区关键字过滤
   const fontSize = ref(12.5); // 接收区字号（px）
 
@@ -193,6 +194,7 @@ export const useRxStore = defineStore("rx", () => {
     txRate,
     saveLog,
     logPath,
+    logError,
     filterText,
     fontSize,
     totalEntries,

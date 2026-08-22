@@ -27,6 +27,12 @@ pub struct ConnManager {
     pub conn: Mutex<Option<ActiveConn>>,
 }
 
+impl Default for ConnManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConnManager {
     pub fn new() -> Self {
         Self {

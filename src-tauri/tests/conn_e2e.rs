@@ -25,7 +25,12 @@ fn start_echo_server(port: u16) -> Arc<Mutex<Vec<u8>>> {
                 Ok(n) => {
                     received2.lock().unwrap().extend_from_slice(&buf[..n]);
                     let _ = stream.write_all(&buf[..n]);
-                    if received2.lock().unwrap().windows(8).any(|w| w == b"ping-123") {
+                    if received2
+                        .lock()
+                        .unwrap()
+                        .windows(8)
+                        .any(|w| w == b"ping-123")
+                    {
                         break;
                     }
                 }
@@ -61,7 +66,7 @@ fn tcp_client_roundtrip() {
     let rx_frames = Arc::new(Mutex::new(Vec::new()));
     let rx_frames2 = rx_frames.clone();
     let _ = app.listen("rx-data", move |ev| {
-        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&ev.payload()) {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(ev.payload()) {
             if let Some(data) = payload["data"].as_array() {
                 let bytes: Vec<u8> = data
                     .iter()
@@ -91,7 +96,11 @@ fn tcp_client_roundtrip() {
 
     thread::sleep(Duration::from_millis(300));
     let frames = rx_frames.lock().unwrap();
-    assert!(frames.iter().any(|f| f == b"ping-123"), "未收到回显: {:?}", frames);
+    assert!(
+        frames.iter().any(|f| f == b"ping-123"),
+        "未收到回显: {:?}",
+        frames
+    );
 
     let recv = echo_received.lock().unwrap();
     assert_eq!(&recv[..], b"ping-123", "服务端收到数据不匹配");
@@ -153,7 +162,7 @@ fn udp_client_roundtrip() {
     let rx_frames = Arc::new(Mutex::new(Vec::new()));
     let rx_frames2 = rx_frames.clone();
     let _ = app.listen("rx-data", move |ev| {
-        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&ev.payload()) {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(ev.payload()) {
             if let Some(data) = payload["data"].as_array() {
                 let bytes: Vec<u8> = data
                     .iter()
@@ -182,7 +191,53 @@ fn udp_client_roundtrip() {
 
     thread::sleep(Duration::from_millis(300));
     let frames = rx_frames.lock().unwrap();
-    assert!(frames.iter().any(|f| f == b"udp-ping"), "UDP 未收到回显: {:?}", frames);
+    assert!(
+        frames.iter().any(|f| f == b"udp-ping"),
+        "UDP 未收到回显: {:?}",
+        frames
+    );
+
+    manager.close();
+}
+
+#[test]
+fn udp_server_replies_to_last_sender() {
+    use std::net::UdpSocket;
+
+    let probe = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let manager = ConnManager::new();
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    manager
+        .open(
+            ConnConfig::TcpUdp(TcpUdpConfig {
+                protocol: "udp".into(),
+                mode: "server".into(),
+                target: String::new(),
+                port,
+                auto_reconnect: false,
+                reconnect_interval: 1.0,
+            }),
+            handle,
+        )
+        .expect("open UDP server failed");
+
+    let client = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    client
+        .send_to(b"request", ("127.0.0.1", port))
+        .expect("UDP request failed");
+    thread::sleep(Duration::from_millis(200));
+
+    assert_eq!(manager.send(b"reply").unwrap(), 5);
+    let mut buf = [0u8; 64];
+    let (n, _) = client.recv_from(&mut buf).expect("UDP reply missing");
+    assert_eq!(&buf[..n], b"reply");
 
     manager.close();
 }

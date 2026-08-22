@@ -3,6 +3,8 @@ pub mod conn;
 
 use conn::{ConnConfig, ConnManager};
 use serde::Serialize;
+use std::fs::OpenOptions;
+use std::io::Write;
 
 #[derive(Serialize)]
 struct PortInfo {
@@ -84,6 +86,21 @@ fn conn_is_connected(manager: tauri::State<'_, ConnManager>) -> Result<bool, Str
     Ok(manager.is_connected())
 }
 
+#[tauri::command]
+fn append_log_file(path: String, line: String) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("日志路径为空".into());
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("打开日志文件失败: {}", e))?;
+    file.write_all(line.as_bytes())
+        .map_err(|e| format!("写入日志文件失败: {}", e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -94,7 +111,8 @@ pub fn run() {
             conn_open,
             conn_close,
             conn_send,
-            conn_is_connected
+            conn_is_connected,
+            append_log_file
         ])
         .setup(|app| {
             // 端口热插拔监听

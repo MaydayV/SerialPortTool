@@ -179,6 +179,14 @@ function demoData() {
         </button>
         <button
           class="tool-btn"
+          :class="{ active: !store.rxHexMode && !store.asciiMode }"
+          @click="setView('text')"
+          title="文本显示（按编码解码并保留 ANSI 样式）"
+        >
+          文本
+        </button>
+        <button
+          class="tool-btn"
           :class="{ active: store.paused }"
           @click="onTogglePause"
           title="暂停滚动（数据继续接收）"
@@ -274,12 +282,12 @@ function demoData() {
         ref="scrollEl"
         class="scroll"
         @scroll.passive="onScroll"
-        :style="{ height: totalHeight + 'px' }"
       >
-        <div
-          class="virtual-inner"
-          :style="{ transform: `translateY(${visible[0]?.index ?? 0 * rowHeight}px)` }"
-        >
+        <div class="virtual-content" :style="{ height: totalHeight + 'px' }">
+          <div
+            class="virtual-inner"
+            :style="{ transform: `translateY(${(visible[0]?.index ?? 0) * rowHeight}px)` }"
+          >
           <div
             v-for="entry in visible"
             :key="entry.entry.id"
@@ -323,6 +331,7 @@ function demoData() {
           </div>
         </div>
       </div>
+    </div>
     </div>
 
     <button
@@ -491,8 +500,13 @@ function demoData() {
   height: 100%;
   position: relative;
 }
-.virtual-inner {
+.virtual-content {
   position: relative;
+  width: 100%;
+}
+.virtual-inner {
+  position: absolute;
+  inset: 0 0 auto;
 }
 .row {
   display: flex;

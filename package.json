@@ -1,11 +1,12 @@
 {
   "name": "serial-aid",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "test": "node scripts/verify_protocol.cjs && node scripts/verify_protocol_store.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

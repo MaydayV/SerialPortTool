@@ -18,28 +18,35 @@ export const useTxStore = defineStore("tx", () => {
   const scheduledInterval = ref(1000); // ms
   const sending = ref(false);
 
+  const feedback = ref("");
+  let feedbackTimer: ReturnType<typeof setTimeout> | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  function nowBytes(): Uint8Array {
-    let raw = new Uint8Array(0);
-    const text = sendText.value;
+  function notify(message: string) {
+    feedback.value = message;
+    if (feedbackTimer) clearTimeout(feedbackTimer);
+    feedbackTimer = setTimeout(() => (feedback.value = ""), 4500);
+  }
+
+  function encodeText(text: string): Uint8Array {
+    let raw: Uint8Array;
     if (sendHexMode.value) {
-      const b = hexToBytes(text);
-      if (b) raw = b;
+      raw = hexToBytes(text) ?? new Uint8Array(0);
     } else if (escapeMode.value) {
       raw = escapeToBytes(text);
     } else {
-      // 按编码（默认 UTF-8）
       raw = new TextEncoder().encode(text);
     }
-    if (appendNewline.value) {
-      const nl = useCRLF.value ? new Uint8Array([0x0d, 0x0a]) : new Uint8Array([0x0a]);
-      const out = new Uint8Array(raw.length + nl.length);
-      out.set(raw);
-      out.set(nl, raw.length);
-      raw = out;
-    }
-    return raw;
+    if (!appendNewline.value) return raw;
+    const nl = useCRLF.value ? new Uint8Array([0x0d, 0x0a]) : new Uint8Array([0x0a]);
+    const out = new Uint8Array(raw.length + nl.length);
+    out.set(raw);
+    out.set(nl, raw.length);
+    return out;
+  }
+
+  function nowBytes(): Uint8Array {
+    return encodeText(sendText.value);
   }
 
   function pushHistory(t: string) {
@@ -57,21 +64,24 @@ export const useTxStore = defineStore("tx", () => {
     history.value = [];
   }
 
-  /** 直接发送一条历史记录（按当前 HEX/转义模式解析） */
+  /** 直接发送一条历史记录（按当前 HEX/转义/换行设置解析） */
   async function sendHistory(t: string) {
-    if (!t) return;
-    const bytes = sendHexMode.value
-      ? hexToBytes(t) ?? new Uint8Array()
-      : escapeMode.value
-        ? escapeToBytes(t)
-        : new TextEncoder().encode(t);
-    await doSend(bytes);
+    if (!t) return false;
+    const bytes = encodeText(t);
+    return doSend(bytes);
   }
 
   async function doSend(bytes: Uint8Array): Promise<boolean> {
     const conn = useConnStore();
     const rx = useRxStore();
-    if (!conn.isConnected()) return false;
+    if (!conn.isConnected()) {
+      notify("未连接，无法发送");
+      return false;
+    }
+    if (bytes.length === 0) {
+      notify("发送内容为空或 HEX 格式无效");
+      return false;
+    }
     try {
       // 协议组帧（若启用）
       const proto = useProtocolStore();
@@ -81,7 +91,8 @@ export const useTxStore = defineStore("tx", () => {
       rx.append(bytes, "tx");
       return true;
     } catch (e) {
-      console.error("send failed", e);
+      const message = e instanceof Error ? e.message : String(e);
+      notify(`发送失败：${message}`);
       return false;
     }
   }
@@ -89,7 +100,10 @@ export const useTxStore = defineStore("tx", () => {
   async function send() {
     if (sending.value) return;
     const bytes = nowBytes();
-    if (bytes.length === 0) return;
+    if (bytes.length === 0) {
+      notify("发送内容为空或 HEX 格式无效");
+      return;
+    }
     sending.value = true;
     try {
       const ok = await doSend(bytes);
@@ -129,7 +143,12 @@ export const useTxStore = defineStore("tx", () => {
   let itemSeq = 0;
 
   function addCustomItem(text = "") {
-    customItems.value.push({ id: ++itemSeq, text });
+    const maxId = customItems.value.reduce(
+      (max, item) => Math.max(max, Number.isFinite(item.id) ? item.id : 0),
+      0
+    );
+    itemSeq = Math.max(itemSeq, maxId) + 1;
+    customItems.value.push({ id: itemSeq, text });
   }
 
   function removeCustomItem(id: number) {
@@ -138,13 +157,8 @@ export const useTxStore = defineStore("tx", () => {
 
   async function sendCustom(id: number) {
     const item = customItems.value.find((i) => i.id === id);
-    if (!item) return;
-    const bytes = sendHexMode.value
-      ? hexToBytes(item.text) ?? new Uint8Array()
-      : escapeMode.value
-        ? escapeToBytes(item.text)
-        : new TextEncoder().encode(item.text);
-    await doSend(bytes);
+    if (!item) return false;
+    return doSend(encodeText(item.text));
   }
 
   /** 发送文件（读文件字节后发送）——由组件注入 readFileBytes 实现 */
@@ -154,8 +168,18 @@ export const useTxStore = defineStore("tx", () => {
   }
 
   async function sendFile(path: string) {
-    const bytes = await fileReader(path);
-    return doSend(bytes);
+    try {
+      const bytes = await fileReader(path);
+      if (bytes.length === 0) {
+        notify("文件为空，未发送");
+        return false;
+      }
+      return doSend(bytes);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      notify(`文件发送失败：${message}`);
+      return false;
+    }
   }
 
   function stopAll() {
@@ -176,6 +200,7 @@ export const useTxStore = defineStore("tx", () => {
     scheduled,
     scheduledInterval,
     sending,
+    feedback,
     customItems,
     send,
     removeHistory,

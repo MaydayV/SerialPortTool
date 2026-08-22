@@ -25,18 +25,22 @@ export interface FrameTemplate {
   description: string;
 }
 
+const MAX_FRAME_LENGTH = 16 * 1024 * 1024;
+const VALID_LENGTH_BYTES = [1, 2, 4];
+const DEFAULT_LENGTH: LengthField = {
+  enabled: false,
+  offset: 0,
+  bytes: 1,
+  endian: "little",
+  includeSelf: false,
+};
+
 export const DEFAULT_TEMPLATES: FrameTemplate[] = [
   {
     name: "透传",
     header: "",
     tail: "",
-    length: {
-      enabled: false,
-      offset: 0,
-      bytes: 1,
-      endian: "little",
-      includeSelf: false,
-    },
+    length: { ...DEFAULT_LENGTH },
     checksum: "none",
     checksumRange: "all",
     checksumPosition: "tail",
@@ -46,13 +50,7 @@ export const DEFAULT_TEMPLATES: FrameTemplate[] = [
     name: "CRC16-MODBUS 帧",
     header: "",
     tail: "",
-    length: {
-      enabled: false,
-      offset: 0,
-      bytes: 1,
-      endian: "little",
-      includeSelf: false,
-    },
+    length: { ...DEFAULT_LENGTH },
     checksum: "crc16_modbus",
     checksumRange: "all",
     checksumPosition: "tail",
@@ -76,146 +74,297 @@ export const DEFAULT_TEMPLATES: FrameTemplate[] = [
   },
 ];
 
-function hexToBytes(hex: string): Uint8Array {
-  const cleaned = hex.replace(/0x/gi, "").replace(/[,\s]+/g, "");
-  if (!cleaned || cleaned.length % 2 !== 0) return new Uint8Array();
+type UnknownRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 将常见 hex 输入规范化；非法字符/奇数位直接拒绝。 */
+function normalizeHex(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    .replace(/0x/gi, "")
+    .replace(/[\s,;:_-]+/g, "")
+    .toUpperCase();
+  if (cleaned.length % 2 !== 0 || !/^[0-9A-F]*$/.test(cleaned)) return null;
+  return cleaned.match(/../g)?.join(" ") ?? "";
+}
+
+function hexToBytes(hex: string): Uint8Array | null {
+  const normalized = normalizeHex(hex);
+  if (normalized === null) return null;
+  const cleaned = normalized.replace(/\s+/g, "");
   const out = new Uint8Array(cleaned.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(cleaned.slice(i * 2, i * 2 + 2), 16);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Number.parseInt(cleaned.slice(i * 2, i * 2 + 2), 16);
+  }
   return out;
 }
 
-/** 从帧数据中提取长度字段值 */
-function readLength(frame: Uint8Array, lf: LengthField): number {
-  let v = 0;
-  for (let i = 0; i < lf.bytes; i++) {
-    const idx = lf.offset + (lf.endian === "little" ? i : lf.bytes - 1 - i);
-    v = (v << 8) | (frame[idx] ?? 0);
-  }
-  return v;
-}
-
-/** 计算校验范围 */
-function checksumRange(t: FrameTemplate, frame: Uint8Array, tailLen: number): Uint8Array {
-  const csLen = CHECKSUM_ALGOS.find((a) => a.id === t.checksum)?.bytes ?? 0;
-  const pos = t.checksumPosition === "tail" ? 0 : tailLen;
-  const end = frame.length - pos - csLen;
-  return frame.slice(0, end);
+function isChecksumAlgo(value: unknown): value is ChecksumAlgo {
+  return CHECKSUM_ALGOS.some((a) => a.id === value);
 }
 
 /**
- * 解帧：从输入缓冲中提取完整帧
- * @param buffer 累积缓冲（可变）
- * @param t 模板
- * @returns 提取出的帧数组（从 buffer 头部移除已消费字节）
+ * 导入/运行前统一模板结构。返回 null 表示模板不可信，调用方不得写入模板库。
+ * 缺少可选字段时使用安全默认值；显式提供的错误类型不会被静默接受。
+ */
+export function normalizeFrameTemplate(input: unknown): FrameTemplate | null {
+  if (!isRecord(input)) return null;
+  if (typeof input.name !== "string" || !input.name.trim()) return null;
+
+  const header = normalizeHex(input.header === undefined ? "" : input.header);
+  const tail = normalizeHex(input.tail === undefined ? "" : input.tail);
+  if (header === null || tail === null) return null;
+
+  const rawLength = input.length === undefined ? {} : input.length;
+  if (!isRecord(rawLength)) return null;
+  const length: LengthField = {
+    enabled: rawLength.enabled === undefined ? DEFAULT_LENGTH.enabled : rawLength.enabled as boolean,
+    offset: rawLength.offset === undefined ? DEFAULT_LENGTH.offset : rawLength.offset as number,
+    bytes: rawLength.bytes === undefined ? DEFAULT_LENGTH.bytes : rawLength.bytes as number,
+    endian: rawLength.endian === undefined ? DEFAULT_LENGTH.endian : rawLength.endian as "little" | "big",
+    includeSelf: rawLength.includeSelf === undefined ? DEFAULT_LENGTH.includeSelf : rawLength.includeSelf as boolean,
+  };
+  if (
+    typeof length.enabled !== "boolean" ||
+    !Number.isSafeInteger(length.offset) ||
+    length.offset < 0 ||
+    !VALID_LENGTH_BYTES.includes(length.bytes) ||
+    (length.endian !== "little" && length.endian !== "big") ||
+    typeof length.includeSelf !== "boolean"
+  ) {
+    return null;
+  }
+
+  const headerBytes = hexToBytes(header);
+  if (headerBytes === null) return null;
+  if (length.enabled && (length.offset < headerBytes.length || length.offset > MAX_FRAME_LENGTH)) {
+    return null;
+  }
+
+  const checksum = input.checksum === undefined ? "none" : input.checksum;
+  const checksumRange = input.checksumRange === undefined ? "all" : input.checksumRange;
+  const checksumPosition = input.checksumPosition === undefined ? "tail" : input.checksumPosition;
+  const description = input.description === undefined ? "" : input.description;
+  if (
+    !isChecksumAlgo(checksum) ||
+    (checksumRange !== "all" && checksumRange !== "payload") ||
+    (checksumPosition !== "tail" && checksumPosition !== "before_tail") ||
+    typeof description !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    name: input.name.trim(),
+    header,
+    tail,
+    length,
+    checksum,
+    checksumRange,
+    checksumPosition,
+    description,
+  };
+}
+
+/** 返回模板是否包含可安全执行的完整结构。 */
+export function validateFrameTemplate(input: unknown): boolean {
+  return normalizeFrameTemplate(input) !== null;
+}
+
+function readLength(frame: Uint8Array, lf: LengthField): number {
+  let value = 0;
+  for (let i = 0; i < lf.bytes; i++) {
+    const significance = lf.endian === "little" ? i : lf.bytes - 1 - i;
+    value += frame[lf.offset + i] * 2 ** (8 * significance);
+  }
+  return value;
+}
+
+function checksumBytes(t: FrameTemplate): number {
+  return CHECKSUM_ALGOS.find((a) => a.id === t.checksum)?.bytes ?? 0;
+}
+
+/** 校验帧中尾部是否位于预期位置。 */
+function hasExpectedTail(frame: Uint8Array, tail: Uint8Array, csLen: number, t: FrameTemplate): boolean {
+  if (tail.length === 0) return true;
+  const tailStart = t.checksumPosition === "tail"
+    ? frame.length - csLen - tail.length
+    : frame.length - tail.length;
+  return tailStart >= 0 && bytesEqual(frame.slice(tailStart, tailStart + tail.length), tail);
+}
+
+function checksumStart(frame: Uint8Array, tailLen: number, csLen: number, t: FrameTemplate): number {
+  return t.checksumPosition === "tail" ? frame.length - csLen : frame.length - tailLen - csLen;
+}
+
+/** RX/TX 共用的 payload 起止位置，避免两边对范围的解释分叉。 */
+function payloadBounds(
+  t: FrameTemplate,
+  tailLen: number,
+  csStart: number
+): { start: number; end: number } {
+  const headerLen = hexToBytes(t.header)?.length ?? 0;
+  const start = t.length.enabled ? t.length.offset + t.length.bytes : headerLen;
+  const end = t.checksumPosition === "tail" ? csStart - tailLen : csStart;
+  return { start, end };
+}
+
+function checksumInputForFrame(
+  t: FrameTemplate,
+  frame: Uint8Array,
+  tailLen: number,
+  csStart: number
+): Uint8Array | null {
+  if (csStart < 0 || csStart > frame.length) return null;
+  if (t.checksumRange === "all") return frame.slice(0, csStart);
+  const bounds = payloadBounds(t, tailLen, csStart);
+  if (bounds.start < 0 || bounds.end < bounds.start || bounds.end > frame.length) return null;
+  return frame.slice(bounds.start, bounds.end);
+}
+
+/**
+ * 解帧：从输入缓冲中提取完整帧。
+ * 不足一帧时保留 rest；长度/校验/尾标记非法时丢弃一个字节继续找，保证不会死循环。
  */
 export function extractFrames(
   buffer: Uint8Array,
-  t: FrameTemplate
-): {
-  frames: Uint8Array[];
-  rest: Uint8Array;
-  /** 坏帧丢弃次数（校验失败） */
-  errors: number;
-  /** 杂散字节数（帧头前丢弃） */
-  trash: number;
-} {
+  template: FrameTemplate
+): { frames: Uint8Array[]; rest: Uint8Array; errors: number; trash: number } {
+  const t = normalizeFrameTemplate(template);
+  if (!t) return { frames: [], rest: buffer.slice(), errors: buffer.length > 0 ? 1 : 0, trash: 0 };
+
   const frames: Uint8Array[] = [];
-  let buf = buffer;
+  let buf = buffer.slice();
   let errors = 0;
   let trash = 0;
-  const header = hexToBytes(t.header);
-  const tail = hexToBytes(t.tail);
-  const csLen = CHECKSUM_ALGOS.find((a) => a.id === t.checksum)?.bytes ?? 0;
+  const header = hexToBytes(t.header)!;
+  const tail = hexToBytes(t.tail)!;
+  const csLen = checksumBytes(t);
 
   while (buf.length > 0) {
-    // 定位帧头
-    let start = 0;
     if (header.length > 0) {
-      start = findSubarray(buf, header);
-      if (start === -1) break; // 未找到帧头，丢弃积累
+      const start = findSubarray(buf, header);
+      if (start === -1) break;
       if (start > 0) {
         trash += start;
-        buf = buf.slice(start); // 丢弃帧头前的杂散字节
+        buf = buf.slice(start);
       }
     }
 
-    // 计算帧长
     let frameLen = buf.length;
     if (t.length.enabled) {
       const lf = t.length;
-      // 长度字段值：includeSelf=整帧长 / 否则=长度字段后内容长
-      const lenVal = readLength(buf, lf);
-      const dataLen = lf.includeSelf ? lenVal - lf.offset - lf.bytes : lenVal;
-      // 帧总长 = 长度字段起点(offset) + 长度字段(bytes) + 其后内容
-      frameLen = lf.offset + lf.bytes + dataLen;
-    } else {
-      // 无长度字段：靠帧尾或校验定位
-      if (tail.length > 0) {
-        const end = findSubarray(buf.slice(header.length), tail);
-        if (end === -1) break; // 帧尾未到，等更多数据
-        frameLen = header.length + end + tail.length;
-      } else if (csLen > 0) {
-        // 无头无尾有校验：无法分帧，整个缓冲作为一帧
-        frameLen = buf.length;
+      const lengthEnd = lf.offset + lf.bytes;
+      if (buf.length < lengthEnd) break;
+      const lengthValue = readLength(buf, lf);
+      frameLen = lf.includeSelf ? lengthValue : lengthEnd + lengthValue;
+      const minimum = lf.includeSelf ? lengthEnd + csLen + tail.length : lengthEnd + csLen + tail.length;
+      if (
+        !Number.isSafeInteger(frameLen) ||
+        frameLen < minimum ||
+        frameLen > MAX_FRAME_LENGTH
+      ) {
+        errors++;
+        buf = buf.slice(1);
+        continue;
       }
+    } else if (tail.length > 0) {
+      const end = findSubarray(buf.slice(header.length), tail);
+      if (end === -1) break;
+      frameLen =
+        header.length + end + tail.length + (t.checksumPosition === "tail" ? csLen : 0);
+    } else if (csLen > 0) {
+      // 无头无尾有校验无法从流中推断边界，只能把当前缓冲当作一帧。
+      frameLen = buf.length;
     }
 
-    if (buf.length < frameLen) break; // 数据不足，等待
+    if (frameLen <= 0 || frameLen > MAX_FRAME_LENGTH) {
+      errors++;
+      buf = buf.slice(1);
+      continue;
+    }
+    if (buf.length < frameLen) break;
 
     const frame = buf.slice(0, frameLen);
-    // 校验
-    if (t.checksum !== "none") {
-      const range = checksumRange(t, frame, tail.length);
-      const calc = computeChecksum(t.checksum, range);
-      const csBytes = checksumToBytes(t.checksum, calc);
-      const csPos = t.checksumPosition === "tail" ? frame.length - csLen : frame.length - tail.length - csLen;
-      const actual = frame.slice(csPos, csPos + csLen);
-      if (!bytesEqual(actual, csBytes)) {
-        // 校验失败：丢弃首字节继续找
+    if (!hasExpectedTail(frame, tail, csLen, t)) {
+      errors++;
+      buf = buf.slice(1);
+      continue;
+    }
+
+    if (csLen > 0) {
+      const csStart = checksumStart(frame, tail.length, csLen, t);
+      const range = checksumInputForFrame(t, frame, tail.length, csStart);
+      if (!range) {
+        errors++;
+        buf = buf.slice(1);
+        continue;
+      }
+      const expected = checksumToBytes(t.checksum, computeChecksum(t.checksum, range));
+      const actual = frame.slice(csStart, csStart + csLen);
+      if (!bytesEqual(actual, expected)) {
         errors++;
         buf = buf.slice(1);
         continue;
       }
     }
+
     frames.push(frame);
     buf = buf.slice(frameLen);
   }
+
   return { frames, rest: buf, errors, trash };
 }
 
-/**
- * 组帧：把负载数据按模板封装成完整帧
- */
-export function packFrame(payload: Uint8Array, t: FrameTemplate): Uint8Array {
-  const header = hexToBytes(t.header);
-  const tail = hexToBytes(t.tail);
-  const lf = t.length;
-  const csAlgo = t.checksum;
-  const csLen = CHECKSUM_ALGOS.find((a) => a.id === csAlgo)?.bytes ?? 0;
+/** 组帧：把负载数据按模板封装成完整帧。非法模板时返回原始负载副本，避免发出损坏帧。 */
+export function packFrame(payload: Uint8Array, template: FrameTemplate): Uint8Array {
+  const t = normalizeFrameTemplate(template);
+  if (!t) return payload.slice();
 
-  // 组装：header + length + payload + checksum + tail
-  let frame = new Uint8Array(0);
-  frame = concat(frame, header);
+  const header = hexToBytes(t.header)!;
+  const tail = hexToBytes(t.tail)!;
+  const lf = t.length;
+  const csLen = checksumBytes(t);
+  const prefixLength = lf.enabled ? lf.offset : header.length;
+  const payloadStart = lf.enabled ? lf.offset + lf.bytes : header.length;
+
+  if (prefixLength < header.length || payloadStart > MAX_FRAME_LENGTH) return payload.slice();
+
+  let frame = new Uint8Array(prefixLength);
+  frame.set(header);
   if (lf.enabled) {
-    // 长度字段值 = 整帧长(includeSelf) 或 长度字段后内容长
-    const lenVal = lf.includeSelf
+    const lengthValue = lf.includeSelf
       ? lf.offset + lf.bytes + payload.length + csLen + tail.length
       : payload.length + csLen + tail.length;
-    const lenBytes = new Uint8Array(lf.bytes);
-    for (let i = 0; i < lf.bytes; i++) {
-      const shift = 8 * (lf.endian === "little" ? i : lf.bytes - 1 - i);
-      lenBytes[i] = (lenVal >>> shift) & 0xff;
+    const maxLengthValue = 2 ** (8 * lf.bytes) - 1;
+    if (lengthValue < 0 || lengthValue > maxLengthValue || lengthValue > MAX_FRAME_LENGTH) {
+      return payload.slice();
     }
-    frame = concat(frame, lenBytes);
+    const lengthBytes = new Uint8Array(lf.bytes);
+    for (let i = 0; i < lf.bytes; i++) {
+      const significance = lf.endian === "little" ? i : lf.bytes - 1 - i;
+      lengthBytes[i] = Math.floor(lengthValue / 2 ** (8 * significance)) & 0xff;
+    }
+    frame = concat(frame, lengthBytes);
   }
   frame = concat(frame, payload);
 
-  if (csAlgo !== "none") {
-    const range = t.checksumRange === "all" ? frame : payload;
-    const calc = computeChecksum(csAlgo, range);
-    frame = concat(frame, checksumToBytes(csAlgo, calc));
+  if (csLen > 0) {
+    if (t.checksumPosition === "before_tail") {
+      const range = checksumInputForFrame(t, frame, 0, frame.length)!;
+      frame = concat(frame, checksumToBytes(t.checksum, computeChecksum(t.checksum, range)));
+      frame = concat(frame, tail);
+    } else {
+      frame = concat(frame, tail);
+      const range = checksumInputForFrame(t, frame, tail.length, frame.length)!;
+      frame = concat(frame, checksumToBytes(t.checksum, computeChecksum(t.checksum, range)));
+    }
+  } else {
+    frame = concat(frame, tail);
   }
-  frame = concat(frame, tail);
   return frame;
 }
 

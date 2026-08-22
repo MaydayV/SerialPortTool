@@ -12,6 +12,7 @@ import { useTxStore } from "./stores/tx";
 import { useGraphStore } from "./stores/graph";
 import { loadConfig, initPersistence } from "./stores/persist";
 import { formatTime } from "./utils/bytes";
+import { api } from "./api";
 
 const conn = useConnStore();
 const rx = useRxStore();
@@ -66,7 +67,6 @@ function initTheme() {
 function resetAll() {
   if (confirm("确定恢复默认设置？所有配置（连接参数、模板、历史）将被清除。")) {
     localStorage.removeItem("serialaid.config.v1");
-    localStorage.removeItem("serialaid.ui.v1");
     location.reload();
   }
 }
@@ -111,8 +111,9 @@ function onGlobalKeydown(e: KeyboardEvent) {
         rx.clear();
         break;
       case "h":
-        // 切换 HEX 显示
+        // 切换 HEX 显示，并确保与 ASCII 互斥
         rx.rxHexMode = !rx.rxHexMode;
+        rx.asciiMode = false;
         break;
       case "t":
         // 切换时间戳
@@ -139,6 +140,19 @@ onMounted(() => {
   conn.setupListeners();
   conn.refreshPorts();
   rx.setup();
+  let logQueue = Promise.resolve();
+  rx.setLogWriter((line) => {
+    const path = rx.logPath.trim();
+    if (!rx.saveLog || !path) return;
+    logQueue = logQueue.then(async () => {
+      try {
+        await api.appendLogFile(path, line);
+      } catch (error) {
+        rx.logError = error instanceof Error ? error.message : String(error);
+        rx.saveLog = false;
+      }
+    });
+  });
   window.addEventListener("keydown", onGlobalKeydown);
   // 曲线数据：从 rx 原始字节流解析（波形自己按曲线协议解析）
   listen<{ data: number[] }>("rx-data", (e) => {
@@ -235,6 +249,21 @@ onMounted(() => {
             class="range-slider"
           />
           <span class="setting-val">{{ rx.fontSize }}px</span>
+        </div>
+        <div class="setting-row col">
+          <span class="setting-label">持续日志</span>
+          <label class="log-toggle">
+            <input type="checkbox" v-model="rx.saveLog" :disabled="!rx.logPath.trim()" />
+            写入文件
+          </label>
+          <input
+            v-model="rx.logPath"
+            class="log-path-input"
+            placeholder="日志文件绝对路径，例如 /tmp/serialaid.log"
+            title="输入日志文件绝对路径"
+          />
+          <span v-if="rx.logError" class="log-error">{{ rx.logError }}</span>
+          <span class="settings-hint">每条收发数据实时追加；路径由你明确指定</span>
         </div>
         <div class="setting-row">
           <span class="setting-label">数据</span>
@@ -863,6 +892,31 @@ select optgroup {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
+}
+.log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.log-path-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.log-error {
+  color: var(--danger);
+  font-size: 12px;
+}
+.settings-hint {
+  color: var(--text-tertiary);
+  font-size: 11px;
 }
 .profile-list {
   display: flex;

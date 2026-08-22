@@ -4,6 +4,7 @@ import { ref, computed } from "vue";
 import {
   DEFAULT_TEMPLATES,
   extractFrames,
+  normalizeFrameTemplate,
   packFrame,
   type FrameTemplate,
 } from "../utils/protocol";
@@ -32,9 +33,31 @@ export const useProtocolStore = defineStore("protocol", () => {
   }
 
   function addTemplate(t: FrameTemplate) {
-    templates.value.push(t);
-    activeName.value = t.name;
+    const normalized = normalizeFrameTemplate(t);
+    if (!normalized || templates.value.some((item) => item.name === normalized.name)) return false;
+    templates.value.push(normalized);
+    activeName.value = normalized.name;
     rxBuffer.value = new Uint8Array(0);
+    return true;
+  }
+
+  /** 用经过校验的模板集合替换当前模板库（用于持久化恢复）。 */
+  function replaceTemplates(raw: unknown[]): boolean {
+    const normalized: FrameTemplate[] = [];
+    const names = new Set<string>();
+    for (const item of raw) {
+      const template = normalizeFrameTemplate(item);
+      if (!template || names.has(template.name)) continue;
+      names.add(template.name);
+      normalized.push(template);
+    }
+    if (normalized.length === 0) return false;
+    templates.value = normalized;
+    activeName.value = normalized.some((item) => item.name === activeName.value)
+      ? activeName.value
+      : normalized[0].name;
+    rxBuffer.value = new Uint8Array(0);
+    return true;
   }
 
   function removeTemplate(name: string) {
@@ -49,9 +72,13 @@ export const useProtocolStore = defineStore("protocol", () => {
   function updateTemplate(name: string, patch: Partial<FrameTemplate>) {
     const idx = templates.value.findIndex((t) => t.name === name);
     if (idx >= 0) {
-      templates.value[idx] = { ...templates.value[idx], ...patch };
+      const normalized = normalizeFrameTemplate({ ...templates.value[idx], ...patch });
+      if (!normalized) return false;
+      templates.value[idx] = normalized;
       rxBuffer.value = new Uint8Array(0);
+      return true;
     }
+    return false;
   }
 
   /**
@@ -106,29 +133,39 @@ export const useProtocolStore = defineStore("protocol", () => {
   }
 
   /** 从 JSON 导入模板（合并：同名覆盖，新增追加） */
-  function importTemplates(json: string): { added: number; replaced: number } {
+  function importTemplates(json: string): { added: number; replaced: number; rejected: number } {
     try {
       const parsed = JSON.parse(json);
-      const list: FrameTemplate[] = Array.isArray(parsed)
+      const list: unknown[] | null = Array.isArray(parsed)
         ? parsed
-        : parsed.templates;
+        : parsed && typeof parsed === "object" && Array.isArray(parsed.templates)
+          ? parsed.templates
+          : null;
       if (!Array.isArray(list)) throw new Error("格式错误");
       let added = 0;
       let replaced = 0;
-      for (const t of list) {
-        if (!t || typeof t.name !== "string" || !t.name.trim()) continue;
+      let rejected = 0;
+      let changed = false;
+      for (const raw of list) {
+        const t = normalizeFrameTemplate(raw);
+        if (!t) {
+          rejected++;
+          continue;
+        }
         const idx = templates.value.findIndex((x) => x.name === t.name);
         if (idx >= 0) {
-          templates.value[idx] = { ...templates.value[idx], ...t, length: { ...templates.value[idx].length, ...(t.length ?? {}) } };
+          templates.value[idx] = t;
           replaced++;
         } else {
-          templates.value.push({ ...t, length: { ...(t.length ?? {}) } });
+          templates.value.push(t);
           added++;
         }
+        changed = true;
       }
-      return { added, replaced };
+      if (changed) rxBuffer.value = new Uint8Array(0);
+      return { added, replaced, rejected };
     } catch {
-      return { added: 0, replaced: 0 };
+      return { added: 0, replaced: 0, rejected: 0 };
     }
   }
 
@@ -143,6 +180,7 @@ export const useProtocolStore = defineStore("protocol", () => {
     frameTrashCount,
     select,
     addTemplate,
+    replaceTemplates,
     removeTemplate,
     updateTemplate,
     processRx,

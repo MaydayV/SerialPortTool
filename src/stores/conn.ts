@@ -85,14 +85,19 @@ export const useConnStore = defineStore("conn", () => {
     }
   }
 
+  let listenersReady = false;
+
+  /** 注册后端事件监听；组件重复挂载时也只注册一次。 */
   function setupListeners() {
-    listen<{ ports: string[]; added: string[]; removed: string[] }>(
+    if (listenersReady) return;
+    listenersReady = true;
+    void listen<{ ports: string[]; added: string[]; removed: string[] }>(
       "ports-changed",
       () => {
-        refreshPorts();
+        void refreshPorts();
       }
     );
-    listen<{ status: string; msg: string }>("conn-status", (e) => {
+    void listen<{ status: string; msg: string }>("conn-status", (e) => {
       status.value = e.payload.status as typeof status.value;
       statusMsg.value = e.payload.msg;
     });
@@ -130,8 +135,7 @@ export const useConnStore = defineStore("conn", () => {
     }
   }
 
-  const isConnected = () =>
-    status.value === "connected" || status.value === "connecting";
+  const isConnected = () => status.value === "connected";
 
   return {
     ports,

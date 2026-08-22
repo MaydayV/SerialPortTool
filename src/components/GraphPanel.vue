@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import * as echarts from "echarts";
 import { useGraphStore } from "../stores/graph";
+import { hexToBytes } from "../utils/bytes";
 
 const store = useGraphStore();
 const chartEl = ref<HTMLDivElement | null>(null);
 const zoomMode = ref(false); // 滚轮缩放模式
 const colorTarget = ref("");
+const headerValid = computed(() => {
+  const bytes = hexToBytes(store.headerHex);
+  return !!bytes && bytes.length > 0;
+});
 let chart: echarts.ECharts | null = null;
 let renderTimer: ReturnType<typeof requestAnimationFrame> | null = null;
 let dirty = false;
@@ -96,12 +101,13 @@ function onResize() {
 watch(
   () => store.seriesList,
   () => scheduleRender(),
-  { deep: true }
+  { deep: true, immediate: true }
 );
 
 onMounted(async () => {
   await nextTick();
   initChart();
+  scheduleRender();
   window.addEventListener("resize", onResize);
 });
 
@@ -144,8 +150,14 @@ function downloadCsv() {
         v-if="store.protocol === 'binary'"
         v-model="store.headerHex"
         class="ctl header-input"
+        :class="{ invalid: !headerValid }"
+        :aria-invalid="!headerValid"
         placeholder="帧头 hex"
+        title="请输入偶数位十六进制帧头"
       />
+      <span v-if="store.protocol === 'binary' && !headerValid" class="input-error">
+        帧头 HEX 无效
+      </span>
       <input
         v-model.number="store.xRange"
         type="number"
@@ -257,6 +269,13 @@ function downloadCsv() {
 }
 .header-input {
   width: 110px;
+}
+.header-input.invalid {
+  border-color: var(--danger);
+}
+.input-error {
+  color: var(--danger);
+  font-size: 11px;
 }
 .range-input {
   width: 64px;

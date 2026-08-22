@@ -37,7 +37,7 @@ fn high_frequency_rx_stress() {
     let rx_count2 = rx_count.clone();
     let rx_bytes2 = rx_bytes.clone();
     let _ = app.listen("rx-data", move |ev| {
-        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&ev.payload()) {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(ev.payload()) {
             if let Some(data) = payload["data"].as_array() {
                 rx_count2.fetch_add(1, Ordering::SeqCst);
                 rx_bytes2.fetch_add(data.len(), Ordering::SeqCst);

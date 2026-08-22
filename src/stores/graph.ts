@@ -4,7 +4,6 @@ import { ref, computed } from "vue";
 import {
   parseAsciiFrame,
   parseBinaryFrames,
-  DEFAULT_HEADER,
 } from "../utils/curve";
 
 export interface CurveSeries {
@@ -59,16 +58,16 @@ export const useGraphStore = defineStore("graph", () => {
       .map((n) => series.value[n])
   );
 
-  function getHeader(): Uint8Array {
-    try {
-      const cleaned = headerHex.value.replace(/0x/gi, "").replace(/[,\s]+/g, "");
-      const bytes = new Uint8Array(cleaned.length / 2);
-      for (let i = 0; i < bytes.length; i++)
-        bytes[i] = parseInt(cleaned.slice(i * 2, i * 2 + 2), 16);
-      return bytes;
-    } catch {
-      return DEFAULT_HEADER;
+  function getHeader(): Uint8Array | null {
+    const cleaned = headerHex.value.replace(/0x/gi, "").replace(/[,\s]+/g, "");
+    if (!cleaned || cleaned.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(cleaned)) {
+      return null;
     }
+    const bytes = new Uint8Array(cleaned.length / 2);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = parseInt(cleaned.slice(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
   }
 
   function ensureSeries(name: string): CurveSeries {
@@ -117,10 +116,15 @@ export const useGraphStore = defineStore("graph", () => {
       }
       if (textBuf.length > 4096) textBuf = textBuf.slice(-4096); // 防膨胀
     } else {
+      const header = getHeader();
+      if (!header) {
+        binaryBuf = new Uint8Array(0);
+        return;
+      }
       const combined = new Uint8Array(binaryBuf.length + data.length);
       combined.set(binaryBuf);
       combined.set(data, binaryBuf.length);
-      const { points, rest } = parseBinaryFrames(combined, getHeader());
+      const { points, rest } = parseBinaryFrames(combined, header);
       binaryBuf = rest;
       for (const pt of points) {
         pushPoint(pt);

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 创建/复用 Release 草稿（只负责元数据，不在这里编译）
+  # 只创建 Release 草稿；所有安装包成功后才允许 publish-release 公开发布。
   create-release:
     permissions:
       contents: write
@@ -22,6 +22,7 @@ jobs:
         id: meta
         shell: bash
         run: |
+          set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME}"
@@ -49,7 +50,7 @@ jobs:
             echo "Tag 已存在: ${TAG_NAME}"
           fi
 
-      - name: 创建或复用 Release
+      - name: 创建或复用 Release 草稿
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,18 +68,23 @@ jobs:
               -f "target_commitish=${GITHUB_SHA}" \
               -f "name=SerialPortTool ${VERSION}" \
               -f "body=跨平台串口调试助手自动编译产物。请根据平台下载对应安装包。" \
-              -F "draft=false" -F "prerelease=false" --jq '.id')
-            echo "已创建 Release: ${RELEASE_ID}"
+              -F "draft=true" -F "prerelease=false" --jq '.id')
+            echo "已创建 Release 草稿: ${RELEASE_ID}"
           else
-            echo "复用已有 Release: ${RELEASE_ID}"
+            RELEASE_DRAFT=$(printf '%s' "${RELEASE_RESPONSE}" | jq -r '.draft // false')
+            if [ "${RELEASE_DRAFT}" != "true" ]; then
+              echo "Release ${TAG_NAME} 已经正式发布，拒绝覆盖已有正式版本；请提升 package.json 版本后再发布。" >&2
+              exit 1
+            fi
+            echo "复用已有 Release 草稿: ${RELEASE_ID}"
           fi
-          # 无论是新建还是复用，都确保最终为公开发布状态
+          # 复用旧 Release 时也强制回到草稿，禁止半成品被公开看到。
           gh api "${API}/releases/${RELEASE_ID}" --method PATCH \
-            -F "draft=false" -F "prerelease=false" >/dev/null
-          echo "Release 已设为公开发布"
+            -F "draft=true" -F "prerelease=false" >/dev/null
+          echo "Release 保持 draft=true"
           echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
 
-  # 三平台矩阵编译
+  # 四个平台构建全部成功后，publish-release 才会运行。
   build-tauri:
     needs: create-release
     permissions:
@@ -123,6 +129,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # 使用 create-release 明确输出的 Release ID，避免矩阵任务找不到 draft Release
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
+
+  publish-release:
+    needs: [create-release, build-tauri]
+    if: ${{ needs.build-tauri.result == 'success' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: 发布完整 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API="repos/${GITHUB_REPOSITORY}"
+          gh api "${API}/releases/${RELEASE_ID}" --method PATCH \
+            -F "draft=false" -F "prerelease=false" >/dev/null
+          DRAFT=$(gh api "${API}/releases/${RELEASE_ID}" --jq '.draft')
+          test "${DRAFT}" = "false"
+          echo "Release ${RELEASE_ID} 已在四个平台构建成功后公开发布"

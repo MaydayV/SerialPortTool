@@ -61,8 +61,6 @@ function onKeydown(e: KeyboardEvent) {
 function onHistorySelect() {
   if (selectedHistory.value) {
     tx.sendText = selectedHistory.value;
-    // 选中后重置，方便再次选择同一项
-    selectedHistory.value = "";
   }
 }
 
@@ -212,9 +210,12 @@ function onScheduleChange() {
       </div>
     </div>
 
+    <div v-if="tx.feedback" class="send-feedback" role="status">
+      {{ tx.feedback }}
+    </div>
     <div class="actions">
       <button class="send-btn" :disabled="!conn.isConnected()" @click="onSend">
-        发送
+        {{ conn.status === "connecting" ? "连接中..." : "发送" }}
       </button>
       <div class="more-wrap">
         <button
@@ -367,6 +368,14 @@ function onScheduleChange() {
 .mini-btn.danger:hover {
   border-color: #ff3b30;
   color: #ff3b30;
+}
+.send-feedback {
+  margin: 0 10px 4px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: rgba(255, 159, 10, 0.14);
+  color: #a86000;
+  font-size: 11.5px;
 }
 .actions {
   display: flex;

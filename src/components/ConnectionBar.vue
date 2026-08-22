@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed } from "vue";
 import { useConnStore } from "../stores/conn";
 
 const store = useConnStore();
@@ -35,10 +35,6 @@ const statusText = computed(() => {
   }
 });
 
-onMounted(() => {
-  store.refreshPorts();
-  store.setupListeners();
-});
 </script>
 
 <template>
@@ -108,6 +104,12 @@ onMounted(() => {
       <label class="chk" title="断线后自动重连">
         <input type="checkbox" v-model="store.serial.auto_reconnect" /> 自动重连
       </label>
+      <label class="chk" title="启用串口 RTS 信号">
+        <input type="checkbox" v-model="store.serial.rts" /> RTS
+      </label>
+      <label class="chk" title="启用串口 DTR 信号">
+        <input type="checkbox" v-model="store.serial.dtr" /> DTR
+      </label>
     </template>
 
     <!-- TCP/UDP 参数 -->
@@ -149,8 +151,27 @@ onMounted(() => {
           <option value="9000" />
         </datalist>
       </template>
-      <label class="chk" title="断线后自动重连">
+      <label
+        v-if="store.tcpudp.protocol === 'tcp' && store.tcpudp.mode === 'client'"
+        class="chk"
+        title="TCP 客户端断线后自动重连"
+      >
         <input type="checkbox" v-model="store.tcpudp.auto_reconnect" /> 自动重连
+      </label>
+      <label
+        v-if="store.tcpudp.protocol === 'tcp' && store.tcpudp.mode === 'client'"
+        class="tcp-interval"
+        title="自动重连间隔（秒）"
+      >
+        重连
+        <input
+          v-model.number="store.tcpudp.reconnect_interval"
+          class="ctl reconnect-input"
+          type="number"
+          min="0.1"
+          step="0.1"
+        />
+        秒
       </label>
     </template>
 
@@ -200,10 +221,16 @@ onMounted(() => {
     </div>
     <button
       class="toggle-btn"
-      :class="{ open: store.status === 'connected' }"
+      :class="{ open: store.status === 'connected', connecting: store.status === 'connecting' }"
       @click="store.toggle()"
     >
-      {{ store.status === "connected" ? "关闭" : "打开" }}
+      {{
+        store.status === "connected"
+          ? "关闭"
+          : store.status === "connecting"
+            ? "取消连接"
+            : "打开"
+      }}
     </button>
 
     <div v-if="store.lastError" class="error-msg">
@@ -293,6 +320,19 @@ onMounted(() => {
 .port-select {
   min-width: 180px;
 }
+.tcp-interval {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.reconnect-input {
+  width: 62px;
+  max-width: 62px;
+  padding: 4px 6px;
+}
 .profile-box {
   display: flex;
   align-items: center;
@@ -341,6 +381,12 @@ onMounted(() => {
 }
 .toggle-btn.open {
   background: #ff3b30;
+}
+.toggle-btn.connecting {
+  background: #ff9f0a;
+}
+.toggle-btn.connecting:hover {
+  background: #e58e00;
 }
 .toggle-btn.open:hover {
   background: #e0352b;

@@ -51,4 +51,6 @@ export const api = {
   connClose: () => invoke<void>("conn_close"),
   connSend: (data: number[]) => invoke<number>("conn_send", { data }),
   connIsConnected: () => invoke<boolean>("conn_is_connected"),
+  appendLogFile: (path: string, line: string) =>
+    invoke<void>("append_log_file", { path, line }),
 };
