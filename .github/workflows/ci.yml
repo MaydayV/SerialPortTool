@@ -49,4 +49,4 @@ jobs:
 
       - name: Rust 测试（含集成测试）
         working-directory: src-tauri
-        run: cargo test --all-targets --all-features
+        run: cargo test --all-targets --all-features -- --test-threads=1
