@@ -42,7 +42,8 @@ jobs:
         run: |
           set -euo pipefail
           API="repos/${GITHUB_REPOSITORY}"
-          RELEASE_ID=$(gh api "${API}/releases/tags/${TAG_NAME}" --jq '.id' 2>/dev/null || true)
+          RELEASE_RESPONSE=$(gh api "${API}/releases/tags/${TAG_NAME}" 2>/dev/null || true)
+          RELEASE_ID=$(printf '%s' "${RELEASE_RESPONSE}" | jq -r '.id // empty')
           if [ -z "${RELEASE_ID}" ]; then
             RELEASE_ID=$(gh api "${API}/releases" --method POST \
               -f "tag_name=${TAG_NAME}" \
