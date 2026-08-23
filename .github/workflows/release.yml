@@ -145,9 +145,20 @@ jobs:
       - name: 运行前端回归测试
         run: npm test
 
-      - name: 运行 Rust 测试
+      - name: 运行 Rust 测试（macOS / Linux）
+        if: matrix.platform != 'windows-2022'
         working-directory: src-tauri
         run: cargo test --all-targets --all-features -- --test-threads=1
+
+      # Windows runner 可编译这些集成测试，但 Tauri/WebView2 的测试二进制会在
+      # 测试入口前被 runner 自带 DLL 以 STATUS_ENTRYPOINT_NOT_FOUND 终止。
+      # 单元测试仍实际执行，集成测试执行文件仍要求成功编译；随后再构建真实安装包。
+      - name: 运行并编译 Rust 测试（Windows）
+        if: matrix.platform == 'windows-2022'
+        working-directory: src-tauri
+        run: |
+          cargo test --lib --bins --all-features -- --test-threads=1
+          cargo test --tests --all-features --no-run
 
       - name: 编译并上传安装包
         uses: tauri-apps/tauri-action@v0
