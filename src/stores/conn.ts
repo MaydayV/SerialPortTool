@@ -1,7 +1,7 @@
 // 连接状态 store：统一管理连接配置、状态、收发数据
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api, type PortInfo, type SerialConfig, type TcpUdpConfig } from "../api";
 
 export const useConnStore = defineStore("conn", () => {
@@ -10,6 +10,23 @@ export const useConnStore = defineStore("conn", () => {
   const status = ref<"closed" | "connecting" | "connected" | "lose">("closed");
   const statusMsg = ref("");
   const lastError = ref("");
+  const lastErrorDetail = ref("");
+  const operationPending = ref(false);
+
+  function setError(context: string, error: unknown) {
+    const raw = error instanceof Error ? error.message : String(error);
+    lastErrorDetail.value = raw;
+    if (raw.includes("reading 'invoke'") || raw.includes("__TAURI_INTERNALS__")) {
+      lastError.value = "当前预览环境无法访问桌面连接后端";
+    } else if (/permission|denied|拒绝|权限/i.test(raw)) {
+      lastError.value = `${context}失败：没有设备或文件访问权限`;
+    } else if (/not found|不存在|No such/i.test(raw)) {
+      lastError.value = `${context}失败：设备或目标不存在`;
+    } else {
+      const clean = raw.replace(/^(Error|TypeError):\s*/i, "").trim();
+      lastError.value = `${context}失败${clean ? `：${clean}` : ""}`;
+    }
+  }
 
   // 串口参数
   const serial = ref<SerialConfig>({
@@ -30,6 +47,7 @@ export const useConnStore = defineStore("conn", () => {
     mode: "client",
     target: "127.0.0.1:2345",
     port: 2345,
+    local_port: 0,
     auto_reconnect: false,
     reconnect_interval: 1,
   });
@@ -45,7 +63,7 @@ export const useConnStore = defineStore("conn", () => {
   const profileName = ref(""); // 收藏命名输入
 
   function saveProfile() {
-    const name = profileName.value.trim();
+    const name = profileName.value.trim().slice(0, 100);
     if (!name) return;
     profiles.value = [
       {
@@ -55,7 +73,7 @@ export const useConnStore = defineStore("conn", () => {
         tcpudp: JSON.parse(JSON.stringify(tcpudp.value)),
       },
       ...profiles.value.filter((p) => p.name !== name),
-    ];
+    ].slice(0, 100);
     profileName.value = "";
   }
 
@@ -71,71 +89,153 @@ export const useConnStore = defineStore("conn", () => {
     profiles.value = profiles.value.filter((x) => x.name !== name);
   }
 
+  function renameProfile(name: string, nextName: string): boolean {
+    const next = nextName.trim().slice(0, 100);
+    if (!next || (next !== name && profiles.value.some((profile) => profile.name === next))) {
+      return false;
+    }
+    const profile = profiles.value.find((item) => item.name === name);
+    if (!profile) return false;
+    profile.name = next;
+    profiles.value = [...profiles.value];
+    return true;
+  }
+
+  let refreshGeneration = 0;
   async function refreshPorts() {
+    const generation = ++refreshGeneration;
     try {
-      ports.value = await api.listPorts();
+      const nextPorts = await api.listPorts();
+      if (generation !== refreshGeneration) return false;
+      ports.value = nextPorts;
       // 默认选中第一个可用端口
       if (serial.value.port === "" && ports.value.length > 0) {
         serial.value.port = ports.value[0].name;
       }
+      lastError.value = "";
+      lastErrorDetail.value = "";
       return true;
     } catch (e) {
-      lastError.value = String(e);
+      setError("刷新串口", e);
       return false;
     }
   }
 
   let listenersReady = false;
+  let listenerSetup: Promise<void> | null = null;
+  let unlistenPorts: UnlistenFn | null = null;
+  let unlistenStatus: UnlistenFn | null = null;
+  let desiredOpen = false;
+  let pendingOperations = 0;
+
+  function beginOperation() {
+    pendingOperations += 1;
+    operationPending.value = true;
+  }
+
+  function endOperation() {
+    pendingOperations = Math.max(0, pendingOperations - 1);
+    operationPending.value = pendingOperations > 0;
+  }
 
   /** 注册后端事件监听；组件重复挂载时也只注册一次。 */
-  function setupListeners() {
+  async function setupListeners() {
     if (listenersReady) return;
-    listenersReady = true;
-    void listen<{ ports: string[]; added: string[]; removed: string[] }>(
-      "ports-changed",
-      () => {
-        void refreshPorts();
+    if (listenerSetup) return listenerSetup;
+    listenerSetup = (async () => {
+      const portsListener = await listen<{ ports: string[]; added: string[]; removed: string[] }>(
+        "ports-changed",
+        () => void refreshPorts()
+      );
+      try {
+        const statusListener = await listen<{ status: string; msg: string }>(
+          "conn-status",
+          (e) => {
+            const next = e.payload.status;
+            if (!["closed", "connecting", "connected", "lose"].includes(next)) return;
+            // 已请求关闭时忽略迟到的连接中/已连接状态。
+            if (!desiredOpen && (next === "connecting" || next === "connected")) return;
+            if (next === "closed") desiredOpen = false;
+            status.value = next as typeof status.value;
+            statusMsg.value = typeof e.payload.msg === "string" ? e.payload.msg : "";
+          }
+        );
+        unlistenPorts = portsListener;
+        unlistenStatus = statusListener;
+        listenersReady = true;
+      } catch (error) {
+        portsListener();
+        throw error;
       }
-    );
-    void listen<{ status: string; msg: string }>("conn-status", (e) => {
-      status.value = e.payload.status as typeof status.value;
-      statusMsg.value = e.payload.msg;
-    });
+    })();
+    try {
+      await listenerSetup;
+    } finally {
+      listenerSetup = null;
+    }
   }
 
   async function open() {
+    if (desiredOpen) return;
+    desiredOpen = true;
+    beginOperation();
     lastError.value = "";
+    lastErrorDetail.value = "";
+    status.value = "connecting";
+    statusMsg.value = "正在打开连接...";
     try {
       if (connType.value === "serial") {
         await api.connOpen({ type: "Serial", config: { ...serial.value } });
       } else {
         await api.connOpen({ type: "TcpUdp", config: { ...tcpudp.value } });
       }
+      if (!desiredOpen) await api.connClose();
     } catch (e) {
-      lastError.value = String(e);
+      setError("打开连接", e);
       status.value = "closed";
+      statusMsg.value = "";
+      desiredOpen = false;
+    } finally {
+      endOperation();
     }
   }
 
   async function close() {
+    desiredOpen = false;
+    beginOperation();
+    status.value = "connecting";
+    statusMsg.value = "正在关闭连接...";
     try {
       await api.connClose();
       status.value = "closed";
       statusMsg.value = "";
     } catch (e) {
-      lastError.value = String(e);
+      setError("关闭连接", e);
+      status.value = "lose";
+      statusMsg.value = "关闭状态未知，请重试";
+    } finally {
+      endOperation();
     }
   }
 
   async function toggle() {
-    if (status.value === "connected" || status.value === "connecting") {
+    // 掉线重连阶段 desiredOpen 仍为 true，此时按钮必须能真正关闭连接。
+    if (desiredOpen || status.value !== "closed") {
       await close();
     } else {
       await open();
     }
   }
 
-  const isConnected = () => status.value === "connected";
+  const isConnected = () => status.value === "connected" && !operationPending.value;
+
+  function teardownListeners() {
+    unlistenPorts?.();
+    unlistenStatus?.();
+    unlistenPorts = null;
+    unlistenStatus = null;
+    listenersReady = false;
+  }
 
   return {
     ports,
@@ -143,6 +243,8 @@ export const useConnStore = defineStore("conn", () => {
     status,
     statusMsg,
     lastError,
+    lastErrorDetail,
+    operationPending,
     serial,
     tcpudp,
     profiles,
@@ -150,8 +252,10 @@ export const useConnStore = defineStore("conn", () => {
     saveProfile,
     applyProfile,
     removeProfile,
+    renameProfile,
     refreshPorts,
     setupListeners,
+    teardownListeners,
     open,
     close,
     toggle,

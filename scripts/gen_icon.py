@@ -1,7 +1,10 @@
 # 生成 SerialAid 应用图标（macOS icns + Windows ico + png 各尺寸）
 # 风格：深蓝渐变圆角方块 + 白色串口连接节点图案
 from PIL import Image, ImageDraw
-import os, subprocess, tempfile
+from pathlib import Path
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
 
 SIZE = 1024
 # 渐变背景（深蓝 → 蓝紫）
@@ -45,19 +48,24 @@ d.rounded_rectangle([cx2 - r2, cy2 - r2, cx2 + r2, cy2 + r2], radius=36, fill=No
 for px in [cx2 - 55, cx2, cx2 + 55]:
     d.ellipse([px - 25, cy2 - 25, px + 25, cy2 + 25], fill=white)
 
-outdir = "src-tauri/icons"
-os.makedirs(outdir, exist_ok=True)
+outdir = ROOT / "src-tauri" / "icons"
+outdir.mkdir(parents=True, exist_ok=True)
+source = outdir / "app-icon-source.png"
+img.save(source)
 
-# PNG 各尺寸
-for size in [32, 128, 256, 512, 1024]:
-    resized = img.resize((size, size), Image.LANCZOS)
-    name = f"icon_{size}x{size}.png" if size != 1024 else "icon.png"
-    if size == 32:
-        name = "32x32.png"
-    elif size == 128:
-        name = "128x128.png"
-    elif size == 256:
-        name = "128x128@2x.png"
-    resized.save(os.path.join(outdir, name))
+# 统一交给 Tauri 生成 macOS 完整 ICNS（含 1024px）、Windows ICO 及各平台 PNG。
+subprocess.run(
+    ["npm", "run", "tauri", "icon", str(source)],
+    cwd=ROOT,
+    check=True,
+)
 
-print("PNG icons generated")
+# 兼容仓库中早期命名，确保未被 tauri.conf 引用的备用图标也不会残留默认素材。
+for size, name in [
+    (256, "256x256.png"),
+    (512, "512x512.png"),
+    (512, "icon_512x512.png"),
+]:
+    img.resize((size, size), Image.Resampling.LANCZOS).save(outdir / name)
+
+print(f"Application icons generated from {source}")

@@ -61,6 +61,7 @@ export function decodeText(
 /** 转义字符串 -> bytes：支持 \n \r \t \xHH \0 等 */
 export function escapeToBytes(input: string): Uint8Array {
   const out: number[] = [];
+  const encoder = new TextEncoder();
   let i = 0;
   while (i < input.length) {
     const c = input[i];
@@ -103,8 +104,11 @@ export function escapeToBytes(input: string): Uint8Array {
           i += 1;
       }
     } else {
-      out.push(c.charCodeAt(0) & 0xff);
-      i += 1;
+      // 普通字符与非转义发送保持一致，按 UTF-8 编码；不能截断到低 8 位。
+      const codePoint = input.codePointAt(i)!;
+      const char = String.fromCodePoint(codePoint);
+      out.push(...encoder.encode(char));
+      i += char.length;
     }
   }
   return new Uint8Array(out);
@@ -115,6 +119,17 @@ export interface ColorSpan {
   fg?: string;
   bg?: string;
   bold?: boolean;
+}
+
+export interface AnsiParserState {
+  pending: string;
+  fg?: string;
+  bg?: string;
+  bold: boolean;
+}
+
+export function createAnsiParserState(): AnsiParserState {
+  return { pending: "", bold: false };
 }
 
 /**
@@ -165,6 +180,64 @@ export function parseAnsi(text: string): ColorSpan[] {
     spans.push({ text: text.slice(last), fg, bg, bold });
   }
   return spans;
+}
+
+/** 增量解析 ANSI SGR，支持控制序列和样式跨接收块延续。 */
+export function parseAnsiChunk(text: string, state: AnsiParserState): ColorSpan[] {
+  const input = state.pending + text;
+  state.pending = "";
+  const spans: ColorSpan[] = [];
+  let plainStart = 0;
+  let index = 0;
+
+  const pushPlain = (end: number) => {
+    if (end > plainStart) {
+      spans.push({
+        text: input.slice(plainStart, end),
+        fg: state.fg,
+        bg: state.bg,
+        bold: state.bold,
+      });
+    }
+  };
+
+  while (index < input.length) {
+    const esc = input.indexOf("\x1b", index);
+    if (esc < 0) break;
+    pushPlain(esc);
+    const match = /^\x1b\[([0-9;]*)m/.exec(input.slice(esc));
+    if (!match) {
+      const suffix = input.slice(esc);
+      if (/^\x1b(?:\[[0-9;]*)?$/.test(suffix)) {
+        state.pending = suffix;
+        plainStart = input.length;
+        index = input.length;
+        break;
+      }
+      spans.push({ text: "\x1b", fg: state.fg, bg: state.bg, bold: state.bold });
+      index = esc + 1;
+      plainStart = index;
+      continue;
+    }
+    const codes = match[1] ? match[1].split(";").map(Number) : [0];
+    for (const code of codes) {
+      if (code === 0) {
+        state.fg = undefined;
+        state.bg = undefined;
+        state.bold = false;
+      } else if (code === 1) {
+        state.bold = true;
+      } else if (code >= 30 && code <= 37) {
+        state.fg = ANSI_COLORS[code];
+      } else if (code >= 40 && code <= 47) {
+        state.bg = ANSI_COLORS[code - 10];
+      }
+    }
+    index = esc + match[0].length;
+    plainStart = index;
+  }
+  if (index < input.length) pushPlain(input.length);
+  return spans.length ? spans : [{ text: "" }];
 }
 
 /** 时间戳格式化: HH:MM:SS.mmm */

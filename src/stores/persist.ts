@@ -5,6 +5,7 @@ import { useRxStore } from "./rx";
 import { useTxStore } from "./tx";
 import { useProtocolStore } from "./protocol";
 import { useGraphStore } from "./graph";
+import type { SerialConfig, TcpUdpConfig } from "../api";
 
 const KEY = "serialaid.config.v1";
 
@@ -16,6 +17,56 @@ function isFinitePositive(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
+const ENCODINGS = ["UTF-8", "ASCII", "GBK", "GB2312", "GB18030", "UTF-16"];
+
+function normalizeSerial(raw: unknown, fallback: SerialConfig): SerialConfig {
+  if (!isRecord(raw)) return { ...fallback };
+  return {
+    port: typeof raw.port === "string" ? raw.port.slice(0, 1024) : fallback.port,
+    baudrate:
+      Number.isSafeInteger(raw.baudrate) && (raw.baudrate as number) > 0 && (raw.baudrate as number) <= 10_000_000
+        ? raw.baudrate as number
+        : fallback.baudrate,
+    data_bits: [5, 6, 7, 8].includes(raw.data_bits as number)
+      ? raw.data_bits as number
+      : fallback.data_bits,
+    parity: ["none", "odd", "even"].includes(raw.parity as string)
+      ? raw.parity as string
+      : fallback.parity,
+    stop_bits: raw.stop_bits === 1 || raw.stop_bits === 2 ? raw.stop_bits : fallback.stop_bits,
+    flow_control: ["none", "software", "hardware"].includes(raw.flow_control as string)
+      ? raw.flow_control as string
+      : fallback.flow_control,
+    rts: typeof raw.rts === "boolean" ? raw.rts : fallback.rts,
+    dtr: typeof raw.dtr === "boolean" ? raw.dtr : fallback.dtr,
+    auto_reconnect:
+      typeof raw.auto_reconnect === "boolean" ? raw.auto_reconnect : fallback.auto_reconnect,
+  };
+}
+
+function normalizeTcpUdp(raw: unknown, fallback: TcpUdpConfig): TcpUdpConfig {
+  if (!isRecord(raw)) return { ...fallback };
+  return {
+    protocol: raw.protocol === "udp" ? "udp" : raw.protocol === "tcp" ? "tcp" : fallback.protocol,
+    mode: raw.mode === "server" ? "server" : raw.mode === "client" ? "client" : fallback.mode,
+    target: typeof raw.target === "string" ? raw.target.slice(0, 2048) : fallback.target,
+    port:
+      Number.isInteger(raw.port) && (raw.port as number) >= 0 && (raw.port as number) <= 65535
+        ? raw.port as number
+        : fallback.port,
+    local_port:
+      Number.isInteger(raw.local_port) && (raw.local_port as number) >= 0 && (raw.local_port as number) <= 65535
+        ? raw.local_port as number
+        : fallback.local_port,
+    auto_reconnect:
+      typeof raw.auto_reconnect === "boolean" ? raw.auto_reconnect : fallback.auto_reconnect,
+    reconnect_interval:
+      isFinitePositive(raw.reconnect_interval)
+        ? Math.min(raw.reconnect_interval, 3600)
+        : fallback.reconnect_interval,
+  };
+}
+
 interface Persisted {
   connType: "serial" | "tcpudp";
   serial: object;
@@ -25,6 +76,7 @@ interface Persisted {
     encoding: string;
     rxHexMode: boolean;
     asciiMode: boolean;
+    dualMode: boolean;
     showLineNo: boolean;
     showTimestamp: boolean;
     fontSize: number;
@@ -73,11 +125,13 @@ export function saveConfig(theme: string) {
       encoding: rx.encoding,
       rxHexMode: rx.rxHexMode,
       asciiMode: rx.asciiMode,
+      dualMode: rx.dualMode,
       showLineNo: rx.showLineNo,
       showTimestamp: rx.showTimestamp,
       fontSize: rx.fontSize,
-      saveLog: rx.saveLog,
-      logPath: rx.logPath,
+      // 沙盒文件授权只在本次会话有效，不持久化路径或自动写入状态。
+      saveLog: false,
+      logPath: "",
     },
     tx: {
       sendHexMode: tx.sendHexMode,
@@ -104,13 +158,17 @@ export function saveConfig(theme: string) {
     },
     theme: theme as "light" | "dark" | "system",
   };
-  localStorage.setItem(KEY, JSON.stringify(data));
+  try {
+    localStorage.setItem(KEY, JSON.stringify(data));
+  } catch (error) {
+    console.warn("config save failed", error);
+  }
 }
 
 export function loadConfig(themeRef: { value: "light" | "dark" | "system" }) {
-  const raw = localStorage.getItem(KEY);
-  if (!raw) return;
   try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return;
     const d = JSON.parse(raw) as Persisted;
     const conn = useConnStore();
     const rx = useRxStore();
@@ -119,54 +177,60 @@ export function loadConfig(themeRef: { value: "light" | "dark" | "system" }) {
     const graph = useGraphStore();
 
     conn.connType = d.connType === "tcpudp" ? "tcpudp" : "serial";
-    if (isRecord(d.serial)) {
-      if (typeof d.serial.port === "string") conn.serial.port = d.serial.port;
-      if (isFinitePositive(d.serial.baudrate)) conn.serial.baudrate = d.serial.baudrate;
-      if ([5, 6, 7, 8].includes(d.serial.data_bits as number)) conn.serial.data_bits = d.serial.data_bits as number;
-      if (["none", "odd", "even"].includes(d.serial.parity as string)) conn.serial.parity = d.serial.parity as string;
-      if (d.serial.stop_bits === 1 || d.serial.stop_bits === 2) conn.serial.stop_bits = d.serial.stop_bits as number;
-      if (["none", "software", "hardware"].includes(d.serial.flow_control as string)) conn.serial.flow_control = d.serial.flow_control as string;
-      if (typeof d.serial.rts === "boolean") conn.serial.rts = d.serial.rts;
-      if (typeof d.serial.dtr === "boolean") conn.serial.dtr = d.serial.dtr;
-      if (typeof d.serial.auto_reconnect === "boolean") conn.serial.auto_reconnect = d.serial.auto_reconnect;
-    }
-    if (isRecord(d.tcpudp)) {
-      if (d.tcpudp.protocol === "tcp" || d.tcpudp.protocol === "udp") conn.tcpudp.protocol = d.tcpudp.protocol;
-      if (d.tcpudp.mode === "client" || d.tcpudp.mode === "server") conn.tcpudp.mode = d.tcpudp.mode;
-      if (typeof d.tcpudp.target === "string") conn.tcpudp.target = d.tcpudp.target;
-      if (Number.isInteger(d.tcpudp.port) && (d.tcpudp.port as number) > 0 && (d.tcpudp.port as number) <= 65535) conn.tcpudp.port = d.tcpudp.port as number;
-      if (typeof d.tcpudp.auto_reconnect === "boolean") conn.tcpudp.auto_reconnect = d.tcpudp.auto_reconnect;
-      if (isFinitePositive(d.tcpudp.reconnect_interval)) conn.tcpudp.reconnect_interval = d.tcpudp.reconnect_interval;
-    }
+    Object.assign(conn.serial, normalizeSerial(d.serial, conn.serial));
+    Object.assign(conn.tcpudp, normalizeTcpUdp(d.tcpudp, conn.tcpudp));
     if (Array.isArray(d.profiles)) {
-      conn.profiles = d.profiles.filter((p): p is Record<string, unknown> =>
-        isRecord(p) && typeof p.name === "string" && (p.connType === "serial" || p.connType === "tcpudp") && isRecord(p.serial) && isRecord(p.tcpudp)
-      ) as any;
+      const names = new Set<string>();
+      conn.profiles = d.profiles.slice(0, 100).flatMap((profile) => {
+        if (!isRecord(profile) || typeof profile.name !== "string") return [];
+        const name = profile.name.trim().slice(0, 100);
+        if (!name || names.has(name)) return [];
+        names.add(name);
+        return [{
+          name,
+          connType: profile.connType === "tcpudp" ? "tcpudp" as const : "serial" as const,
+          serial: normalizeSerial(profile.serial, conn.serial),
+          tcpudp: normalizeTcpUdp(profile.tcpudp, conn.tcpudp),
+        }];
+      });
     }
-    Object.assign(rx, {
-      encoding: d.rx?.encoding ?? rx.encoding,
-      rxHexMode: d.rx?.rxHexMode ?? rx.rxHexMode,
-      asciiMode: d.rx?.asciiMode ?? rx.asciiMode,
-      showLineNo: d.rx?.showLineNo ?? rx.showLineNo,
-      showTimestamp: d.rx?.showTimestamp ?? rx.showTimestamp,
-      fontSize: d.rx?.fontSize ?? rx.fontSize,
-      saveLog: d.rx?.saveLog ?? rx.saveLog,
-      logPath: typeof d.rx?.logPath === "string" ? d.rx.logPath : rx.logPath,
-    });
-    Object.assign(tx, {
-      sendHexMode: d.tx?.sendHexMode ?? tx.sendHexMode,
-      appendNewline: d.tx?.appendNewline ?? tx.appendNewline,
-      useCRLF: d.tx?.useCRLF ?? tx.useCRLF,
-      escapeMode: d.tx?.escapeMode ?? tx.escapeMode,
-      scheduledInterval:
-        typeof d.tx?.scheduledInterval === "number" && d.tx.scheduledInterval >= 10
-          ? d.tx.scheduledInterval
-          : tx.scheduledInterval,
-      history: Array.isArray(d.tx?.history) ? d.tx.history.filter((x): x is string => typeof x === "string").slice(0, 20) : tx.history,
-      customItems: Array.isArray(d.tx?.customItems)
-        ? d.tx.customItems.filter((x) => x && Number.isSafeInteger(x.id) && typeof x.text === "string")
-        : tx.customItems,
-    });
+    if (ENCODINGS.includes(d.rx?.encoding)) rx.encoding = d.rx.encoding;
+    if (typeof d.rx?.rxHexMode === "boolean") rx.rxHexMode = d.rx.rxHexMode;
+    if (typeof d.rx?.asciiMode === "boolean") rx.asciiMode = d.rx.asciiMode;
+    if (typeof d.rx?.dualMode === "boolean") rx.dualMode = d.rx.dualMode;
+    if (rx.dualMode) {
+      rx.rxHexMode = false;
+      rx.asciiMode = false;
+    } else if (rx.rxHexMode && rx.asciiMode) {
+      rx.asciiMode = false;
+    }
+    if (typeof d.rx?.showLineNo === "boolean") rx.showLineNo = d.rx.showLineNo;
+    if (typeof d.rx?.showTimestamp === "boolean") rx.showTimestamp = d.rx.showTimestamp;
+    if (typeof d.rx?.fontSize === "number" && Number.isFinite(d.rx.fontSize)) {
+      rx.fontSize = Math.min(20, Math.max(10, d.rx.fontSize));
+    }
+    // App Sandbox 的用户文件授权不跨启动恢复，必须重新通过系统面板选择。
+    rx.saveLog = false;
+    rx.logPath = "";
+    if (typeof d.tx?.sendHexMode === "boolean") tx.sendHexMode = d.tx.sendHexMode;
+    if (typeof d.tx?.appendNewline === "boolean") tx.appendNewline = d.tx.appendNewline;
+    if (typeof d.tx?.useCRLF === "boolean") tx.useCRLF = d.tx.useCRLF;
+    if (typeof d.tx?.escapeMode === "boolean") tx.escapeMode = d.tx.escapeMode;
+    if (tx.sendHexMode && tx.escapeMode) tx.escapeMode = false;
+    if (typeof d.tx?.scheduledInterval === "number" && Number.isFinite(d.tx.scheduledInterval)) {
+      tx.scheduledInterval = Math.min(3_600_000, Math.max(10, d.tx.scheduledInterval));
+    }
+    tx.history = Array.isArray(d.tx?.history)
+      ? d.tx.history.filter((x): x is string => typeof x === "string").map((x) => x.slice(0, 65_536)).slice(0, 20)
+      : tx.history;
+    if (Array.isArray(d.tx?.customItems)) {
+      const ids = new Set<number>();
+      tx.customItems = d.tx.customItems.slice(0, 100).flatMap((item) => {
+        if (!item || !Number.isSafeInteger(item.id) || item.id <= 0 || ids.has(item.id) || typeof item.text !== "string") return [];
+        ids.add(item.id);
+        return [{ id: item.id, text: item.text.slice(0, 65_536) }];
+      });
+    }
     if (d.proto && Array.isArray(d.proto.templates)) {
       proto.replaceTemplates(d.proto.templates);
       if (typeof d.proto.activeName === "string" && proto.templates.some((t) => t.name === d.proto.activeName)) {
@@ -177,13 +241,15 @@ export function loadConfig(themeRef: { value: "light" | "dark" | "system" }) {
     }
     if (d.graph) {
       if (d.graph.protocol === "ascii" || d.graph.protocol === "binary") graph.protocol = d.graph.protocol;
-      if (typeof d.graph.headerHex === "string") graph.headerHex = d.graph.headerHex;
-      if (typeof d.graph.xRange === "number" && d.graph.xRange > 0) graph.xRange = d.graph.xRange;
+      if (typeof d.graph.headerHex === "string") graph.headerHex = d.graph.headerHex.slice(0, 4096);
+      if (typeof d.graph.xRange === "number" && Number.isFinite(d.graph.xRange) && d.graph.xRange > 0) graph.xRange = Math.min(d.graph.xRange, 1_000_000_000);
       if (typeof d.graph.autoScroll === "boolean") graph.autoScroll = d.graph.autoScroll;
       if (typeof d.graph.enabled === "boolean") graph.enabled = d.graph.enabled;
       if (typeof d.graph.paused === "boolean") graph.paused = d.graph.paused;
     }
-    if (d.theme) themeRef.value = d.theme as typeof themeRef.value;
+    if (d.theme === "light" || d.theme === "dark" || d.theme === "system") {
+      themeRef.value = d.theme;
+    }
   } catch (e) {
     console.warn("config load failed", e);
   }
@@ -213,6 +279,7 @@ export function initPersistence(themeRef: { value: "light" | "dark" | "system" }
       () => rx.encoding,
       () => rx.rxHexMode,
       () => rx.asciiMode,
+      () => rx.dualMode,
       () => rx.showLineNo,
       () => rx.showTimestamp,
       () => rx.fontSize,

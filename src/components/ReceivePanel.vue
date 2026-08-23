@@ -6,6 +6,14 @@ import { useConnStore } from "../stores/conn";
 import { formatTime } from "../utils/bytes";
 
 const store = useRxStore();
+const filterDraft = ref(store.filterText);
+let filterTimer: ReturnType<typeof setTimeout> | null = null;
+watch(filterDraft, (value) => {
+  if (filterTimer) clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => {
+    store.filterText = value;
+  }, 160);
+});
 const rxMoreOpen = ref(false);
 const conn = useConnStore();
 const connStatus = computed(() => conn.status);
@@ -76,6 +84,15 @@ function resizeObserver() {
 
 /** 是否远离底部（显示"回到底部"按钮） */
 const farFromBottom = ref(false);
+watch(
+  () => store.filterText,
+  async () => {
+    scrollTop.value = 0;
+    await nextTick();
+    if (scrollEl.value) scrollEl.value.scrollTop = 0;
+    farFromBottom.value = false;
+  }
+);
 function checkNearBottom() {
   const el = scrollEl.value;
   if (!el) return;
@@ -94,9 +111,10 @@ async function scrollToBottomNow() {
   }
 }
 
-function setView(v: "text" | "hex" | "ascii") {
+function setView(v: "text" | "hex" | "ascii" | "dual") {
   store.rxHexMode = v === "hex";
   store.asciiMode = v === "ascii";
+  store.dualMode = v === "dual";
 }
 
 function onTogglePause() {
@@ -113,7 +131,13 @@ function onTogglePause() {
 let copyTip: ReturnType<typeof setTimeout> | null = null;
 const copyToast = ref("");
 async function copyEntry(e: RxEntry) {
-  const text = store.rxHexMode ? e.hex : e.text;
+  const text = store.dualMode
+    ? `${store.getEntryHex(e)} | ${store.getEntryAscii(e)}`
+    : store.rxHexMode
+      ? store.getEntryHex(e)
+      : store.asciiMode
+        ? store.getEntryAscii(e)
+        : store.getEntryText(e);
   try {
     await navigator.clipboard.writeText(text);
     copyToast.value = `已复制 ${text.length} 字符`;
@@ -124,15 +148,18 @@ async function copyEntry(e: RxEntry) {
   copyTip = setTimeout(() => (copyToast.value = ""), 1500);
 }
 
+let resizeWatcher: ResizeObserver | null = null;
 onMounted(() => {
   resizeObserver();
-  const ro = new ResizeObserver(resizeObserver);
-  if (viewportEl.value) ro.observe(viewportEl.value);
-  (window as any)._ro = ro;
+  resizeWatcher = new ResizeObserver(resizeObserver);
+  if (viewportEl.value) resizeWatcher.observe(viewportEl.value);
 });
 
 onBeforeUnmount(() => {
-  (window as any)._ro?.disconnect();
+  resizeWatcher?.disconnect();
+  resizeWatcher = null;
+  if (copyTip) clearTimeout(copyTip);
+  if (filterTimer) clearTimeout(filterTimer);
 });
 
 function entryClass(dir: string) {
@@ -163,7 +190,8 @@ function demoData() {
       <div class="left">
         <button
           class="tool-btn"
-          :class="{ active: store.rxHexMode && !store.asciiMode }"
+          :class="{ active: store.rxHexMode && !store.asciiMode && !store.dualMode }"
+          :aria-pressed="store.rxHexMode && !store.asciiMode && !store.dualMode"
           @click="setView('hex')"
           title="HEX 显示"
         >
@@ -171,7 +199,17 @@ function demoData() {
         </button>
         <button
           class="tool-btn"
+          :class="{ active: store.dualMode }"
+          :aria-pressed="store.dualMode"
+          @click="setView('dual')"
+          title="HEX 与 ASCII 双栏对照"
+        >
+          双栏
+        </button>
+        <button
+          class="tool-btn"
           :class="{ active: store.asciiMode }"
+          :aria-pressed="store.asciiMode"
           @click="setView('ascii')"
           title="ASCII 显示（不可打印字节显示为 .）"
         >
@@ -179,7 +217,8 @@ function demoData() {
         </button>
         <button
           class="tool-btn"
-          :class="{ active: !store.rxHexMode && !store.asciiMode }"
+          :class="{ active: !store.rxHexMode && !store.asciiMode && !store.dualMode }"
+          :aria-pressed="!store.rxHexMode && !store.asciiMode && !store.dualMode"
           @click="setView('text')"
           title="文本显示（按编码解码并保留 ANSI 样式）"
         >
@@ -188,6 +227,7 @@ function demoData() {
         <button
           class="tool-btn"
           :class="{ active: store.paused }"
+          :aria-pressed="store.paused"
           @click="onTogglePause"
           title="暂停滚动（数据继续接收）"
         >
@@ -205,6 +245,7 @@ function demoData() {
           <button
             class="tool-btn"
             :class="{ active: rxMoreOpen }"
+            :aria-expanded="rxMoreOpen"
             @click="rxMoreOpen = !rxMoreOpen"
             title="更多选项"
           >
@@ -226,21 +267,21 @@ function demoData() {
               时间戳 {{ store.showTimestamp ? "✓" : "" }}
             </button>
             <button class="more-item" @click="demoData(); rxMoreOpen = false">
-              注入模拟数据
+              注入模拟数据（诊断）
             </button>
           </div>
         </div>
       </div>
       <div class="right">
         <input
-          v-model="store.filterText"
+          v-model="filterDraft"
           class="filter-input"
           placeholder="过滤关键字..."
           title="按文本或 HEX 过滤接收内容"
         />
         <span class="stats">
-          收 {{ store.rxCount }} 帧 · {{ store.formatBytes(store.rxBytes) }} / 发
-          {{ store.txCount }} 帧 · {{ store.formatBytes(store.txBytes) }}
+          收 {{ store.rxCount }} 块 · {{ store.formatBytes(store.rxBytes) }} / 发
+          {{ store.txCount }} 块 · {{ store.formatBytes(store.txBytes) }}
           <span class="rates">
             ↓ {{ store.formatBytes(store.rxRate) }}/s ↑
             {{ store.formatBytes(store.txRate) }}/s
@@ -252,9 +293,6 @@ function demoData() {
           title="清空接收区"
         >
           清空
-        </button>
-        <button class="tool-btn" @click="demoData()" title="注入模拟数据验证渲染">
-          模拟
         </button>
       </div>
     </div>
@@ -291,7 +329,7 @@ function demoData() {
           <div
             v-for="entry in visible"
             :key="entry.entry.id"
-            :class="entryClass(entry.entry.dir)"
+            :class="[entryClass(entry.entry.dir), { dual: store.dualMode }]"
             :style="{
               height: rowHeight + 'px',
               fontSize: store.fontSize + 'px',
@@ -309,15 +347,20 @@ function demoData() {
             <span class="dir">
               {{ entry.entry.dir === "rx" ? "⬇" : "⬆" }}
             </span>
-            <template v-if="store.rxHexMode && !store.asciiMode">
-              <code class="hex">{{ entry.entry.hex }}</code>
+            <span v-if="entry.entry.peer" class="peer">{{ entry.entry.peer }}</span>
+            <template v-if="store.dualMode">
+              <code class="hex dual-hex" :title="store.getEntryHex(entry.entry)">{{ store.getEntryHex(entry.entry) }}</code>
+              <code class="hex ascii-view dual-ascii" :title="store.getEntryAscii(entry.entry)">{{ store.getEntryAscii(entry.entry) }}</code>
+            </template>
+            <template v-else-if="store.rxHexMode && !store.asciiMode">
+              <code class="hex">{{ store.getEntryHex(entry.entry) }}</code>
             </template>
             <template v-else-if="store.asciiMode">
-              <code class="hex ascii-view">{{ entry.entry.ascii }}</code>
+              <code class="hex ascii-view">{{ store.getEntryAscii(entry.entry) }}</code>
             </template>
             <template v-else>
               <span
-                v-for="(sp, i) in entry.entry.spans"
+                v-for="(sp, i) in store.getEntrySpans(entry.entry)"
                 :key="i"
                 class="sp"
                 :style="{
@@ -335,7 +378,7 @@ function demoData() {
     </div>
 
     <button
-      v-if="farFromBottom"
+      v-if="farFromBottom && store.filteredCount > 0"
       class="jump-bottom"
       @click="scrollToBottomNow"
       title="回到底部"
@@ -363,7 +406,7 @@ function demoData() {
   flex-wrap: wrap;
   gap: 4px;
   padding: 6px 10px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  border-bottom: 1px solid var(--panel-border);
 }
 .left,
 .right {
@@ -382,17 +425,17 @@ function demoData() {
   cursor: pointer;
 }
 .tool-btn:hover {
-  border-color: #0a84ff;
-  color: #0a84ff;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .tool-btn.active {
-  background: #0a84ff;
+  background: var(--btn-primary-bg);
   color: #fff;
-  border-color: #0a84ff;
+  border-color: var(--btn-primary-bg);
 }
 .tool-btn.danger:hover {
-  border-color: #ff3b30;
-  color: #ff3b30;
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .enc-sel {
   border: 1px solid var(--control-border);
@@ -422,7 +465,7 @@ function demoData() {
   outline: none;
 }
 .filter-input:focus {
-  border-color: #0a84ff;
+  border-color: var(--accent);
 }
 .pause-banner,
 .filter-banner {
@@ -432,8 +475,8 @@ function demoData() {
   color: var(--text-secondary);
 }
 .pause-banner {
-  background: rgba(255, 159, 10, 0.12);
-  color: #b26a00;
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 .filter-banner {
   background: var(--accent-soft);
@@ -496,17 +539,19 @@ function demoData() {
 }
 .scroll {
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
   height: 100%;
   position: relative;
 }
 .virtual-content {
   position: relative;
-  width: 100%;
+  min-width: 100%;
+  width: max-content;
 }
 .virtual-inner {
   position: absolute;
   inset: 0 0 auto;
+  min-width: 100%;
 }
 .row {
   display: flex;
@@ -518,12 +563,13 @@ function demoData() {
   white-space: nowrap;
   font-family: "SF Mono", Menlo, Consolas, "Courier New", monospace;
   border-bottom: 1px solid var(--edit-bg);
+  min-width: 100%;
 }
 .row.rx {
   color: var(--text-primary);
 }
 .row.tx {
-  color: #0a84ff;
+  color: var(--accent);
   background: var(--row-tx-bg);
 }
 .ts {
@@ -535,6 +581,33 @@ function demoData() {
 .dir {
   color: var(--text-tertiary);
   flex-shrink: 0;
+}
+.peer {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  padding-right: 8px;
+  border-right: 1px solid var(--panel-border);
+}
+.row.dual {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.dual-hex,
+.dual-ascii {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dual-hex {
+  flex: 2 1 0;
+  padding-right: 12px;
+  border-right: 1px solid var(--panel-border);
+}
+.dual-ascii {
+  flex: 1 1 0;
+  padding-left: 4px;
 }
 .lineno {
   color: var(--text-tertiary);
@@ -551,6 +624,6 @@ function demoData() {
   color: var(--text-primary);
 }
 .sp {
-  white-space: pre-wrap;
+  white-space: inherit;
 }
 </style>

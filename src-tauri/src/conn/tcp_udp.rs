@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tauri::{AppHandle, Runtime};
 
-use super::serial::{emit_rx, emit_status};
+use super::serial::{emit_rx, emit_rx_from, emit_status};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct TcpUdpConfig {
@@ -18,6 +18,8 @@ pub struct TcpUdpConfig {
     pub mode: String,     // client / server
     pub target: String,   // client: host:port; UDP server 可选回复目标
     pub port: u16,        // server: 本地监听端口
+    #[serde(default)]
+    pub local_port: u16, // UDP client: 本地绑定端口，0 表示系统自动分配
     pub auto_reconnect: bool,
     pub reconnect_interval: f64, // 秒
 }
@@ -29,6 +31,7 @@ impl Default for TcpUdpConfig {
             mode: "client".into(),
             target: "127.0.0.1:2345".into(),
             port: 2345,
+            local_port: 0,
             auto_reconnect: false,
             reconnect_interval: 1.0,
         }
@@ -45,6 +48,7 @@ pub struct TcpUdpConn {
     pub mode: String,
     pub target: String,
     pub port: u16,
+    pub local_port: u16,
     pub auto_reconnect: bool,
     pub reconnect_interval: f64,
     pub stop: Arc<AtomicBool>,
@@ -70,6 +74,7 @@ impl TcpUdpConn {
             mode: cfg.mode,
             target: cfg.target,
             port: cfg.port,
+            local_port: cfg.local_port,
             auto_reconnect: cfg.auto_reconnect,
             reconnect_interval: cfg.reconnect_interval,
             stop: Arc::new(AtomicBool::new(false)),
@@ -148,7 +153,7 @@ impl TcpUdpConn {
         match (self.protocol.as_str(), self.mode.as_str()) {
             ("tcp", "client") => self.open_tcp_client(app)?,
             ("tcp", "server") => self.open_tcp_server(app)?,
-            ("udp", _) => self.open_udp(app)?,
+            ("udp", "client" | "server") => self.open_udp(app)?,
             _ => return Err("不支持的连接类型".into()),
         }
         Ok(())
@@ -186,9 +191,17 @@ impl TcpUdpConn {
             }
         };
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let actual_addr = listener
+            .local_addr()
+            .map(|address| address.to_string())
+            .unwrap_or(bind_addr);
         self.listener.lock().unwrap().replace(listener);
         self.connected.store(true, Ordering::SeqCst);
-        emit_status(&app, "connected", format!("TCP Server 监听 {}", bind_addr));
+        emit_status(
+            &app,
+            "connected",
+            format!("TCP Server 监听 {}", actual_addr),
+        );
 
         let listener = self.listener.clone();
         let clients = self.clients.clone();
@@ -265,7 +278,7 @@ impl TcpUdpConn {
                 let app3 = app2.clone();
                 workers.lock().unwrap().push(std::thread::spawn(move || {
                     let mut stream = read_stream;
-                    let mut buf = vec![0u8; 4096];
+                    let mut buf = vec![0u8; 64 * 1024];
                     let mut closed = false;
                     while !stop2.load(Ordering::SeqCst) {
                         match stream.read(&mut buf) {
@@ -273,7 +286,11 @@ impl TcpUdpConn {
                                 closed = true;
                                 break;
                             }
-                            Ok(n) => emit_rx(&app3, &buf[..n]),
+                            Ok(n) => emit_rx_from(
+                                &app3,
+                                &buf[..n],
+                                Some(format!("{}#{}", addr, client_id)),
+                            ),
                             Err(ref error)
                                 if error.kind() == std::io::ErrorKind::WouldBlock
                                     || error.kind() == std::io::ErrorKind::TimedOut => {}
@@ -310,30 +327,34 @@ impl TcpUdpConn {
     fn open_udp<R: Runtime>(&mut self, app: AppHandle<R>) -> Result<(), String> {
         let target_addr = if self.mode == "client" && !self.target.trim().is_empty() {
             let (host, port) = Self::parse_target(&self.target, 0)?;
-            Some(
-                socket_addr_string(&host, port)
-                    .parse::<SocketAddr>()
-                    .map_err(|e| format!("目标地址无效: {}", e))?,
-            )
+            if port == 0 {
+                return Err("UDP 目标端口必须大于 0".into());
+            }
+            Some(resolve_socket_addr(&host, port)?)
         } else {
             None
         };
-        let (sock, bind_addr) = match target_addr {
+        let bind_port = if self.mode == "client" {
+            self.local_port
+        } else {
+            self.port
+        };
+        let (sock, requested_bind) = match target_addr {
             Some(target) if target.is_ipv4() => {
-                let bind_addr = format!("0.0.0.0:{}", self.port);
+                let bind_addr = format!("0.0.0.0:{}", bind_port);
                 let sock = UdpSocket::bind(&bind_addr)
                     .map_err(|e| format!("绑定 {} 失败: {}", bind_addr, e))?;
                 (sock, bind_addr)
             }
             Some(_) => {
-                let bind_addr = format!("[::]:{}", self.port);
+                let bind_addr = format!("[::]:{}", bind_port);
                 let sock = UdpSocket::bind(&bind_addr)
                     .map_err(|e| format!("绑定 {} 失败: {}", bind_addr, e))?;
                 (sock, bind_addr)
             }
             None => {
-                let ipv6_bind = format!("[::]:{}", self.port);
-                let ipv4_bind = format!("0.0.0.0:{}", self.port);
+                let ipv6_bind = format!("[::]:{}", bind_port);
+                let ipv4_bind = format!("0.0.0.0:{}", bind_port);
                 match UdpSocket::bind(&ipv6_bind) {
                     Ok(sock) => (sock, ipv6_bind),
                     Err(_) => {
@@ -344,6 +365,10 @@ impl TcpUdpConn {
                 }
             }
         };
+        let bind_addr = sock
+            .local_addr()
+            .map(|address| address.to_string())
+            .unwrap_or(requested_bind);
         sock.set_nonblocking(true).map_err(|e| e.to_string())?;
         self.sock.lock().unwrap().replace(ConnSock::Udp(sock));
         self.target_addr = target_addr;
@@ -376,7 +401,7 @@ impl TcpUdpConn {
             Err(_) => self.target.clone(),
         };
         self.threads.push(std::thread::spawn(move || {
-            let mut buf = vec![0u8; 4096];
+            let mut buf = vec![0u8; 64 * 1024];
             while !stop.load(Ordering::SeqCst) {
                 let read_result = {
                     let mut guard = sock.lock().unwrap();
@@ -432,30 +457,42 @@ impl TcpUdpConn {
         let sock = self.sock.clone();
         let stop = self.stop.clone();
         let last_sender = self.last_sender.clone();
+        let connected = self.connected.clone();
         self.threads.push(std::thread::spawn(move || {
-            let mut buf = vec![0u8; 4096];
+            // UDP 最大数据报为 65,535B；使用完整缓冲，禁止静默截断。
+            let mut buf = vec![0u8; u16::MAX as usize];
             while !stop.load(Ordering::SeqCst) {
                 let received = {
                     let guard = sock.lock().unwrap();
                     match guard.as_ref() {
                         Some(ConnSock::Udp(socket)) => match socket.recv_from(&mut buf) {
-                            Ok((n, sender)) => Some((n, sender)),
+                            Ok((n, sender)) => Ok(Some((n, sender))),
                             Err(ref error)
                                 if error.kind() == std::io::ErrorKind::WouldBlock
                                     || error.kind() == std::io::ErrorKind::TimedOut =>
                             {
-                                None
+                                Ok(None)
                             }
-                            Err(_) => None,
+                            Err(error) => Err(error.to_string()),
                         },
-                        _ => None,
+                        _ if stop.load(Ordering::SeqCst) => Ok(None),
+                        _ => Err("UDP Socket 已关闭".to_string()),
                     }
                 };
-                if let Some((n, sender)) = received {
-                    *last_sender.lock().unwrap() = Some(sender);
-                    emit_rx(&app, &buf[..n]);
-                } else {
-                    std::thread::sleep(Duration::from_millis(10));
+                match received {
+                    Ok(Some((n, sender))) => {
+                        *last_sender.lock().unwrap() = Some(sender);
+                        emit_rx_from(&app, &buf[..n], Some(sender.to_string()));
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                    Err(error) => {
+                        connected.store(false, Ordering::SeqCst);
+                        if !stop.load(Ordering::SeqCst) {
+                            emit_status(&app, "lose", format!("UDP 接收失败: {}", error));
+                            emit_status(&app, "closed", "UDP 已关闭".to_string());
+                        }
+                        break;
+                    }
                 }
             }
         }));
@@ -507,18 +544,31 @@ impl TcpUdpConn {
             };
         }
 
-        let mut clients = self.clients.lock().unwrap();
+        let snapshots = {
+            let clients = self.clients.lock().unwrap();
+            clients
+                .iter()
+                .filter_map(|(addr, (id, stream))| {
+                    stream.try_clone().ok().map(|copy| (*addr, *id, copy))
+                })
+                .collect::<Vec<_>>()
+        };
         let mut sent = 0usize;
         let mut dead = Vec::new();
-        for (addr, (_, stream)) in clients.iter_mut() {
+        for (addr, id, mut stream) in snapshots {
             if stream.write_all(data).is_ok() {
                 sent += data.len();
             } else {
-                dead.push(*addr);
+                dead.push((addr, id));
             }
         }
-        for addr in dead {
-            clients.remove(&addr);
+        if !dead.is_empty() {
+            let mut clients = self.clients.lock().unwrap();
+            for (addr, id) in dead {
+                if clients.get(&addr).map(|(current, _)| *current) == Some(id) {
+                    clients.remove(&addr);
+                }
+            }
         }
         if sent == 0 && !data.is_empty() {
             Err("没有可用的 TCP 客户端".into())
@@ -551,6 +601,19 @@ fn socket_addr_string(host: &str, port: u16) -> String {
     } else {
         format!("{}:{}", host, port)
     }
+}
+
+fn resolve_socket_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
+    let addresses = socket_addr_string(host, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("解析 UDP 目标失败: {}", error))?
+        .collect::<Vec<_>>();
+    addresses
+        .iter()
+        .copied()
+        .find(SocketAddr::is_ipv4)
+        .or_else(|| addresses.first().copied())
+        .ok_or_else(|| "UDP 目标地址没有可用结果".to_string())
 }
 
 fn connect_tcp(target: &str) -> std::io::Result<TcpStream> {

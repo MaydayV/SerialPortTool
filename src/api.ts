@@ -27,6 +27,7 @@ export interface TcpUdpConfig {
   mode: string; // client/server
   target: string; // host:port
   port: number;
+  local_port: number;
   auto_reconnect: boolean;
   reconnect_interval: number;
 }
@@ -38,6 +39,7 @@ export type ConnConfig =
 export interface RxPayload {
   data: number[];
   ts: number;
+  peer?: string;
 }
 
 export interface StatusPayload {
@@ -50,7 +52,11 @@ export const api = {
   connOpen: (cfg: ConnConfig) => invoke<void>("conn_open", { cfg }),
   connClose: () => invoke<void>("conn_close"),
   connSend: (data: number[]) => invoke<number>("conn_send", { data }),
-  connIsConnected: () => invoke<boolean>("conn_is_connected"),
+  selectOutputFile: (kind: "log" | "templates" | "curve") =>
+    invoke<string | null>("select_output_file", { kind }),
+  writeUserFile: (path: string, text: string, truncate: boolean) =>
+    invoke<void>("write_user_file", { path, text, truncate }),
   appendLogFile: (path: string, line: string) =>
     invoke<void>("append_log_file", { path, line }),
+  flushLogFiles: () => invoke<void>("flush_log_files"),
 };

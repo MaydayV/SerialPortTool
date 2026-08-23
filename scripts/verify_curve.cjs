@@ -34,6 +34,9 @@ async function main() {
   // 非法行
   check("ascii non-frame", parseAsciiFrame("hello", 0) === null, "");
   check("ascii empty name", parseAsciiFrame("$,1.0", 0) === null, "");
+  check("ascii rejects partial numbers", parseAsciiFrame("$bad,1abc,2", 0) === null, "");
+  check("ascii rejects infinity", parseAsciiFrame("$bad,Infinity,2", 0) === null, "");
+  check("ascii rejects nonnumeric checksum", parseAsciiFrame("$bad,1,2,nope", 0) === null, "");
 
   // 二进制帧构造（与 graph_protocol.plot_pack 兼容）
   function packBinary(name, x, y) {
@@ -65,6 +68,25 @@ async function main() {
   const half = f1.slice(0, f1.length - 3);
   const r3 = parseBinaryFrames(half, DEFAULT_HEADER);
   check("binary half frame", r3.points.length === 0 && r3.rest.length === half.length, `points=${r3.points.length} rest=${r3.rest.length}`);
+  const noise = new Uint8Array(1024 * 1024);
+  noise.fill(0x42);
+  const noisy = parseBinaryFrames(noise, DEFAULT_HEADER);
+  check("binary noise buffer stays bounded", noisy.rest.length < DEFAULT_HEADER.length, `rest=${noisy.rest.length}`);
+  const falseFrame = new Uint8Array(DEFAULT_HEADER.length + 1 + 40 + 17);
+  falseFrame.set(DEFAULT_HEADER);
+  falseFrame[DEFAULT_HEADER.length] = 40;
+  falseFrame.set(f2, 10);
+  let falseSum = 0;
+  for (let i = 0; i < falseFrame.length - 1; i++) falseSum = (falseSum + falseFrame[i]) & 0xff;
+  falseFrame[falseFrame.length - 1] = (falseSum + 1) & 0xff;
+  const resynced = parseBinaryFrames(falseFrame, DEFAULT_HEADER);
+  check(
+    "bad binary checksum resynchronizes to an embedded real header",
+    resynced.points.some((point) => point.name === "data2"),
+    JSON.stringify(resynced.points)
+  );
+  const emptyHeader = parseBinaryFrames(f1, new Uint8Array(0));
+  check("empty binary header is rejected safely", emptyHeader.points.length === 0 && emptyHeader.rest.length === 0);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);

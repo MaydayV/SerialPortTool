@@ -25,6 +25,7 @@ pub enum ConnConfig {
 
 pub struct ConnManager {
     pub conn: Mutex<Option<ActiveConn>>,
+    lifecycle: Mutex<()>,
 }
 
 impl Default for ConnManager {
@@ -37,6 +38,7 @@ impl ConnManager {
     pub fn new() -> Self {
         Self {
             conn: Mutex::new(None),
+            lifecycle: Mutex::new(()),
         }
     }
 
@@ -51,8 +53,9 @@ impl ConnManager {
 
     /// 打开连接（替换旧连接）
     pub fn open<R: Runtime>(&self, cfg: ConnConfig, app: AppHandle<R>) -> Result<(), String> {
+        let _operation = self.lifecycle.lock().unwrap();
         // 先关闭旧连接
-        self.close();
+        self.close_inner();
         let new_conn = match cfg {
             ConnConfig::Serial(cfg) => {
                 let mut c = SerialConn::new(cfg);
@@ -87,6 +90,11 @@ impl ConnManager {
 
     /// 关闭当前连接
     pub fn close(&self) {
+        let _operation = self.lifecycle.lock().unwrap();
+        self.close_inner();
+    }
+
+    fn close_inner(&self) {
         let mut guard = self.conn.lock().unwrap();
         if let Some(conn) = guard.take() {
             match conn {
@@ -103,9 +111,10 @@ pub fn spawn_port_watcher(app: AppHandle) {
         let mut last: Vec<String> = Vec::new();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1500));
-            let ports = serialport::available_ports()
+            let mut ports = serialport::available_ports()
                 .map(|ps| ps.iter().map(|p| p.port_name.clone()).collect::<Vec<_>>())
                 .unwrap_or_default();
+            ports.sort();
             if ports != last {
                 let added = ports
                     .iter()

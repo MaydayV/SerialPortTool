@@ -3,6 +3,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import {
   DEFAULT_TEMPLATES,
+  canInferFrameBoundary,
   extractFrames,
   MAX_FRAME_LENGTH,
   normalizeFrameTemplate,
@@ -11,13 +12,16 @@ import {
 } from "../utils/protocol";
 
 const RX_CHUNK_SIZE = 64 * 1024;
+const MAX_TEMPLATES = 100;
+const MAX_RX_STREAMS = 128;
 
 export const useProtocolStore = defineStore("protocol", () => {
   const templates = ref<FrameTemplate[]>([...DEFAULT_TEMPLATES]);
   const activeName = ref("透传");
   const rxEnabled = ref(false); // 接收解帧
   const txEnabled = ref(false); // 发送组帧
-  const rxBuffer = ref<Uint8Array>(new Uint8Array(0)); // 解帧累积缓冲
+  // TCP Server/UDP 的不同来源必须分别累计，不能把多个客户端的半帧拼到一起。
+  const rxBuffers = new Map<string, Uint8Array>();
 
   // ===== 解帧统计 =====
   const frameCount = ref(0); // 解出的完整帧
@@ -29,18 +33,30 @@ export const useProtocolStore = defineStore("protocol", () => {
       templates.value.find((t) => t.name === activeName.value) ??
       templates.value[0]
   );
+  const canDecodeActive = computed(() => canInferFrameBoundary(active.value));
+
+  function clearBuffers() {
+    for (const buffer of rxBuffers.values()) frameTrashCount.value += buffer.length;
+    rxBuffers.clear();
+  }
 
   function select(name: string) {
+    if (!templates.value.some((template) => template.name === name)) return false;
     activeName.value = name;
-    rxBuffer.value = new Uint8Array(0); // 切换协议清空缓冲
+    clearBuffers(); // 切换协议清空缓冲
+    return true;
   }
 
   function addTemplate(t: FrameTemplate) {
     const normalized = normalizeFrameTemplate(t);
-    if (!normalized || templates.value.some((item) => item.name === normalized.name)) return false;
+    if (
+      !normalized ||
+      templates.value.length >= MAX_TEMPLATES ||
+      templates.value.some((item) => item.name === normalized.name)
+    ) return false;
     templates.value.push(normalized);
     activeName.value = normalized.name;
-    rxBuffer.value = new Uint8Array(0);
+    clearBuffers();
     return true;
   }
 
@@ -48,7 +64,7 @@ export const useProtocolStore = defineStore("protocol", () => {
   function replaceTemplates(raw: unknown[]): boolean {
     const normalized: FrameTemplate[] = [];
     const names = new Set<string>();
-    for (const item of raw) {
+    for (const item of raw.slice(0, MAX_TEMPLATES)) {
       const template = normalizeFrameTemplate(item);
       if (!template || names.has(template.name)) continue;
       names.add(template.name);
@@ -59,7 +75,7 @@ export const useProtocolStore = defineStore("protocol", () => {
     activeName.value = normalized.some((item) => item.name === activeName.value)
       ? activeName.value
       : normalized[0].name;
-    rxBuffer.value = new Uint8Array(0);
+    clearBuffers();
     return true;
   }
 
@@ -68,7 +84,7 @@ export const useProtocolStore = defineStore("protocol", () => {
     templates.value = templates.value.filter((t) => t.name !== name);
     if (activeName.value === name) {
       activeName.value = templates.value[0].name;
-      rxBuffer.value = new Uint8Array(0);
+      clearBuffers();
     }
   }
 
@@ -77,8 +93,13 @@ export const useProtocolStore = defineStore("protocol", () => {
     if (idx >= 0) {
       const normalized = normalizeFrameTemplate({ ...templates.value[idx], ...patch });
       if (!normalized) return false;
+      if (
+        normalized.name !== name &&
+        templates.value.some((template, index) => index !== idx && template.name === normalized.name)
+      ) return false;
       templates.value[idx] = normalized;
-      rxBuffer.value = new Uint8Array(0);
+      if (activeName.value === name) activeName.value = normalized.name;
+      clearBuffers();
       return true;
     }
     return false;
@@ -88,8 +109,18 @@ export const useProtocolStore = defineStore("protocol", () => {
    * RX 数据解帧：返回 [解出的帧数组, 是否启用了解帧]
    * 未启用或透传模板时直接返回原数据
    */
-  function processRx(data: Uint8Array): { frames: Uint8Array[]; enabled: boolean } {
+  function processRx(
+    data: Uint8Array,
+    streamKey = "default"
+  ): { frames: Uint8Array[]; enabled: boolean } {
     if (!rxEnabled.value || active.value.checksum === "none" && !active.value.header && !active.value.tail && !active.value.length.enabled) {
+      if (!rxEnabled.value && rxBuffers.size) clearBuffers();
+      return { frames: [data], enabled: false };
+    }
+    if (!canDecodeActive.value) {
+      // 无边界模板只能用于 TX；RX 安全退回透传，绝不猜测并丢弃半帧。
+      frameTrashCount.value += rxBuffers.get(streamKey)?.length ?? 0;
+      rxBuffers.delete(streamKey);
       return { frames: [data], enabled: false };
     }
     const frames: Uint8Array[] = [];
@@ -99,20 +130,33 @@ export const useProtocolStore = defineStore("protocol", () => {
     const chunkSize = canInferFrameBoundary ? RX_CHUNK_SIZE : data.length;
     for (let offset = 0; offset < data.length; offset += chunkSize) {
       const incoming = data.subarray(offset, Math.min(offset + chunkSize, data.length));
+      const currentBuffer = rxBuffers.get(streamKey) ?? new Uint8Array(0);
       const keepPrevious = Math.max(0, MAX_FRAME_LENGTH - incoming.length);
       const previous =
         keepPrevious === 0
           ? new Uint8Array(0)
-          : rxBuffer.value.length > keepPrevious
-          ? rxBuffer.value.slice(-keepPrevious)
-          : rxBuffer.value;
-      const dropped = rxBuffer.value.length - previous.length;
+          : currentBuffer.length > keepPrevious
+          ? currentBuffer.slice(-keepPrevious)
+          : currentBuffer;
+      const dropped = currentBuffer.length - previous.length;
       const combined = new Uint8Array(previous.length + incoming.length);
       combined.set(previous);
       combined.set(incoming, previous.length);
       const result = extractFrames(combined, active.value);
       const overflow = Math.max(0, result.rest.length - MAX_FRAME_LENGTH);
-      rxBuffer.value = overflow ? result.rest.slice(overflow) : result.rest;
+      const nextBuffer = overflow ? result.rest.slice(overflow) : result.rest;
+      if (nextBuffer.length) {
+        if (!rxBuffers.has(streamKey) && rxBuffers.size >= MAX_RX_STREAMS) {
+          const oldestKey = rxBuffers.keys().next().value as string | undefined;
+          if (oldestKey !== undefined) {
+            trash += rxBuffers.get(oldestKey)?.length ?? 0;
+            rxBuffers.delete(oldestKey);
+          }
+        }
+        rxBuffers.delete(streamKey);
+        rxBuffers.set(streamKey, nextBuffer);
+      }
+      else rxBuffers.delete(streamKey);
       frames.push(...result.frames);
       errors += result.errors;
       trash += result.trash + dropped + overflow;
@@ -130,7 +174,7 @@ export const useProtocolStore = defineStore("protocol", () => {
   }
 
   function resetBuffer() {
-    rxBuffer.value = new Uint8Array(0);
+    clearBuffers();
   }
 
   /** 重置解帧统计 */
@@ -159,6 +203,13 @@ export const useProtocolStore = defineStore("protocol", () => {
   function importTemplates(json: string): { added: number; replaced: number; rejected: number } {
     try {
       const parsed = JSON.parse(json);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        "version" in parsed &&
+        parsed.version !== 1
+      ) throw new Error("不支持的模板版本");
       const list: unknown[] | null = Array.isArray(parsed)
         ? parsed
         : parsed && typeof parsed === "object" && Array.isArray(parsed.templates)
@@ -169,7 +220,7 @@ export const useProtocolStore = defineStore("protocol", () => {
       let replaced = 0;
       let rejected = 0;
       let changed = false;
-      for (const raw of list) {
+      for (const raw of list.slice(0, MAX_TEMPLATES)) {
         const t = normalizeFrameTemplate(raw);
         if (!t) {
           rejected++;
@@ -179,13 +230,17 @@ export const useProtocolStore = defineStore("protocol", () => {
         if (idx >= 0) {
           templates.value[idx] = t;
           replaced++;
+        } else if (templates.value.length >= MAX_TEMPLATES) {
+          rejected++;
+          continue;
         } else {
           templates.value.push(t);
           added++;
         }
         changed = true;
       }
-      if (changed) rxBuffer.value = new Uint8Array(0);
+      if (list.length > MAX_TEMPLATES) rejected += list.length - MAX_TEMPLATES;
+      if (changed) clearBuffers();
       return { added, replaced, rejected };
     } catch {
       return { added: 0, replaced: 0, rejected: 0 };
@@ -198,6 +253,7 @@ export const useProtocolStore = defineStore("protocol", () => {
     rxEnabled,
     txEnabled,
     active,
+    canDecodeActive,
     frameCount,
     frameErrorCount,
     frameTrashCount,

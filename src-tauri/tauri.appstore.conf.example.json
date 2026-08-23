@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "macOS": {
+      "bundleVersion": "__BUILD_NUMBER__",
+      "hardenedRuntime": true,
+      "entitlements": "./macos/AppStore.entitlements.generated.plist",
+      "files": {
+        "embedded.provisionprofile": "__PROVISIONING_PROFILE__"
+      }
+    }
+  }
+}

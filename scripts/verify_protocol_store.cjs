@@ -38,7 +38,11 @@ async function main() {
   store.processRx(frame.subarray(0, 3));
   store.select("CRC16-MODBUS 帧");
   const afterSwitch = store.processRx(frame.subarray(3));
-  check("template switch uses a clean RX buffer", afterSwitch.frames.length === 0);
+  check(
+    "unsafe RX template falls back to lossless passthrough",
+    afterSwitch.enabled === false && afterSwitch.frames.length === 1
+  );
+  check("switching templates accounts for discarded partial data", store.frameTrashCount === 3);
 
   const before = store.templates.length;
   const result = store.importTemplates(JSON.stringify({
@@ -72,6 +76,19 @@ async function main() {
   const replaced = store.replaceTemplates([persistedTemplate, persistedTemplate, { ...persistedTemplate, name: "Broken", header: "GG" }]);
   check("persisted templates replace defaults and deduplicate", replaced && store.templates.length === 1 && store.templates[0].name === "Persisted only");
   check("duplicate template names are rejected", store.addTemplate({ ...persistedTemplate }) === false);
+  const activeBeforeUnknown = store.activeName;
+  check("unknown template cannot become active", store.select("missing") === false && store.activeName === activeBeforeUnknown);
+
+  const oversizedImport = Array.from({ length: 120 }, (_, index) => ({
+    ...persistedTemplate,
+    name: `Imported ${index}`,
+  }));
+  const capped = store.importTemplates(JSON.stringify(oversizedImport));
+  check(
+    "template imports respect the global library cap",
+    store.templates.length === 100 && capped.rejected === 21,
+    `templates=${store.templates.length} rejected=${capped.rejected}`
+  );
 
   const largeTemplate = {
     name: "Large chunk",
@@ -99,7 +116,18 @@ async function main() {
   crcPayload.fill(0x5a);
   const crcFrame = store.processTx(crcPayload);
   const crcResult = store.processRx(crcFrame);
-  check("unbounded CRC frames stay whole", crcResult.frames.length === 1 && crcResult.frames[0].length === crcFrame.length);
+  check(
+    "unbounded CRC RX stays in passthrough mode",
+    crcResult.enabled === false && crcResult.frames.length === 1 && crcResult.frames[0].length === crcFrame.length
+  );
+
+  store.replaceTemplates([sum]);
+  store.select(sum.name);
+  const peerFrame = store.processTx(new Uint8Array([9, 8, 7]));
+  store.processRx(peerFrame.subarray(0, 3), "client-a");
+  const wrongPeer = store.processRx(peerFrame.subarray(3), "client-b");
+  const rightPeer = store.processRx(peerFrame.subarray(3), "client-a");
+  check("different client buffers never mix", wrongPeer.frames.length === 0 && rightPeer.frames.length === 1);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);

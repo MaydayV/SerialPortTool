@@ -1,0 +1,124 @@
+name: Mac App Store 构建与上传
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: App Store 构建号（留空时使用 GitHub run number）
+        required: false
+        type: string
+      upload:
+        description: 上传到 App Store Connect（否则只在线验证）
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  app-store:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SIGNING_IDENTITY: ${{ secrets.APPLE_APP_SIGNING_IDENTITY }}
+      APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER: ${{ secrets.APP_STORE_CONNECT_API_ISSUER }}
+      APP_STORE_BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
+      APP_STORE_TARGET: universal-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          components: rustfmt,clippy
+
+      - name: 安装依赖并执行回归检查
+        run: |
+          npm ci
+          npm test
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- --test-threads=1
+
+      - name: 导入签名证书、描述文件与 API 私钥
+        env:
+          APPLE_APP_CERTIFICATE_BASE64: ${{ secrets.APPLE_APP_CERTIFICATE_BASE64 }}
+          APPLE_APP_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_APP_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_BASE64 }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${APPLE_TEAM_ID:?missing APPLE_TEAM_ID}"
+          : "${APPLE_APP_SIGNING_IDENTITY:?missing APPLE_APP_SIGNING_IDENTITY}"
+          : "${APPLE_INSTALLER_SIGNING_IDENTITY:?missing APPLE_INSTALLER_SIGNING_IDENTITY}"
+          : "${APPLE_APP_CERTIFICATE_BASE64:?missing APPLE_APP_CERTIFICATE_BASE64}"
+          : "${APPLE_APP_CERTIFICATE_PASSWORD:?missing APPLE_APP_CERTIFICATE_PASSWORD}"
+          : "${APPLE_INSTALLER_CERTIFICATE_BASE64:?missing APPLE_INSTALLER_CERTIFICATE_BASE64}"
+          : "${APPLE_INSTALLER_CERTIFICATE_PASSWORD:?missing APPLE_INSTALLER_CERTIFICATE_PASSWORD}"
+          : "${APPLE_PROVISIONING_PROFILE_BASE64:?missing APPLE_PROVISIONING_PROFILE_BASE64}"
+          : "${APP_STORE_CONNECT_API_KEY_ID:?missing APP_STORE_CONNECT_API_KEY_ID}"
+          : "${APP_STORE_CONNECT_API_ISSUER:?missing APP_STORE_CONNECT_API_ISSUER}"
+          : "${APP_STORE_CONNECT_API_KEY_BASE64:?missing APP_STORE_CONNECT_API_KEY_BASE64}"
+
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/serialaid-appstore.keychain-db"
+          APP_CERT_PATH="${RUNNER_TEMP}/app-distribution.p12"
+          INSTALLER_CERT_PATH="${RUNNER_TEMP}/installer-distribution.p12"
+          PROFILE_PATH="${RUNNER_TEMP}/SerialPortTool.provisionprofile"
+
+          printf '%s' "${APPLE_APP_CERTIFICATE_BASE64}" | base64 -D > "${APP_CERT_PATH}"
+          printf '%s' "${APPLE_INSTALLER_CERTIFICATE_BASE64}" | base64 -D > "${INSTALLER_CERT_PATH}"
+          printf '%s' "${APPLE_PROVISIONING_PROFILE_BASE64}" | base64 -D > "${PROFILE_PATH}"
+
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security import "${APP_CERT_PATH}" -k "${KEYCHAIN_PATH}" -P "${APPLE_APP_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
+          security import "${INSTALLER_CERT_PATH}" -k "${KEYCHAIN_PATH}" -P "${APPLE_INSTALLER_CERTIFICATE_PASSWORD}" -T /usr/bin/productbuild -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security list-keychains -d user -s "${KEYCHAIN_PATH}" login.keychain-db
+
+          mkdir -p private_keys
+          printf '%s' "${APP_STORE_CONNECT_API_KEY_BASE64}" | base64 -D > "private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          chmod 600 "private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+
+          echo "APPLE_PROVISIONING_PROFILE=${PROFILE_PATH}" >> "${GITHUB_ENV}"
+          echo "SIGNING_KEYCHAIN_PATH=${KEYCHAIN_PATH}" >> "${GITHUB_ENV}"
+
+      - name: 构建并验证或上传
+        env:
+          SHOULD_UPLOAD: ${{ inputs.upload }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${SHOULD_UPLOAD}" = "true" ]; then
+            npm run appstore:upload
+          else
+            npm run appstore:build
+          fi
+
+      - name: 保存已签名 PKG
+        uses: actions/upload-artifact@v4
+        with:
+          name: SerialPortTool-Mac-App-Store-${{ env.APP_STORE_BUILD_NUMBER }}
+          path: artifacts/app-store/*.pkg
+          if-no-files-found: error
+
+      - name: 清理临时钥匙串
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "${SIGNING_KEYCHAIN_PATH}" || true
+          fi

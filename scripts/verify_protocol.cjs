@@ -134,8 +134,13 @@ async function main() {
 
   // 7. 非法长度/hex 不得制造 NaN/越界帧，也不得让解帧死循环。
   const invalidHexTpl = base({ name: "invalid hex", header: "GG", checksum: "sum8" });
-  const invalidPacked = packFrame(bytes(1, 2), invalidHexTpl);
-  check("invalid hex is safe", equal(invalidPacked, bytes(1, 2)), hex(invalidPacked));
+  let invalidRejected = false;
+  try {
+    packFrame(bytes(1, 2), invalidHexTpl);
+  } catch {
+    invalidRejected = true;
+  }
+  check("invalid hex blocks sending", invalidRejected);
   const invalidLengthTpl = base({
     name: "invalid length",
     header: "AA",
@@ -144,6 +149,41 @@ async function main() {
   });
   const invalidLength = extractFrames(bytes(0xaa, 0x00, 0x01), invalidLengthTpl);
   check("invalid length is rejected safely", invalidLength.frames.length === 0 && invalidLength.errors > 0);
+
+  const tooLarge = new Uint8Array(300);
+  let tooLargeRejected = false;
+  try {
+    packFrame(tooLarge, sumTpl);
+  } catch {
+    tooLargeRejected = true;
+  }
+  check("length overflow blocks sending", tooLargeRejected);
+
+  let totalLimitRejected = false;
+  try {
+    packFrame(new Uint8Array(4 * 1024 * 1024), base({ tail: "0D" }));
+  } catch {
+    totalLimitRejected = true;
+  }
+  check("total frame size limit blocks sending", totalLimitRejected);
+
+  const unbounded = DEFAULT_TEMPLATES.find((t) => t.name === "CRC16-MODBUS 帧");
+  const crcFrame = packFrame(bytes(1, 2, 3, 4), unbounded);
+  const partialCrc = extractFrames(crcFrame.subarray(0, 3), unbounded);
+  check(
+    "unbounded checksum never discards a possible half frame",
+    partialCrc.frames.length === 0 && equal(partialCrc.rest, crcFrame.subarray(0, 3))
+  );
+
+  const bigEndianTpl = base({
+    name: "CRC big endian",
+    tail: "0D 0A",
+    checksum: "crc16_modbus",
+    checksumEndian: "big",
+    checksumPosition: "before_tail",
+  });
+  const bigEndianFrame = packFrame(bytes(1, 2, 3), bigEndianTpl);
+  check("big-endian checksum roundtrip", extractFrames(bigEndianFrame, bigEndianTpl).frames.length === 1);
 
   // 8. 透传仍保持原行为。
   const pasTpl = DEFAULT_TEMPLATES.find((t) => t.name === "透传");

@@ -30,23 +30,24 @@ export function parseAsciiFrame(
   if (parts.length === 2) {
     // $name,y → x 自动递增
     x = autoX;
-    y = parseFloat(parts[1]);
+    y = Number(parts[1]);
   } else {
-    x = parseFloat(parts[1]);
-    y = parseFloat(parts[2]);
+    x = Number(parts[1]);
+    y = Number(parts[2]);
   }
-  if (isNaN(x) || isNaN(y)) return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
   // 校验和（可选第 4 段）：除校验段外所有字节（含 $ 前缀）和 % 256
   if (parts.length === 4) {
-    const cs = parseInt(parts[3], 10);
-    if (!isNaN(cs)) {
-      const lastComma = s.lastIndexOf(",");
-      let sum = 0;
-      for (let i = 0; i < lastComma; i++) {
-        sum = (sum + s.charCodeAt(i)) & 0xff;
-      }
-      if (sum !== cs) return null;
+    const checksumText = parts[3].trim();
+    if (!/^\d{1,3}$/.test(checksumText)) return null;
+    const cs = Number(checksumText);
+    if (!Number.isInteger(cs) || cs < 0 || cs > 0xff) return null;
+    const lastComma = s.lastIndexOf(",");
+    let sum = 0;
+    for (let i = 0; i < lastComma; i++) {
+      sum = (sum + s.charCodeAt(i)) & 0xff;
     }
+    if (sum !== cs) return null;
   }
   return { name, x, y };
 }
@@ -62,11 +63,17 @@ export function parseBinaryFrames(
   const points: CurvePoint[] = [];
   let buf = buffer;
   const hdrLen = header.length;
+  if (hdrLen === 0) return { points, rest: new Uint8Array(0) };
 
   while (buf.length > hdrLen) {
     // 找帧头
     const start = findSubarray(buf, header);
-    if (start === -1) break;
+    if (start === -1) {
+      // 噪声中没有完整帧头时，只保留可能构成下一次帧头的尾部前缀。
+      const keep = matchingHeaderPrefixSuffix(buf, header);
+      buf = keep > 0 ? buf.slice(-keep) : new Uint8Array(0);
+      break;
+    }
     if (start > 0) buf = buf.slice(start);
     if (buf.length < hdrLen + 1) break;
     const nameLen = buf[hdrLen];
@@ -83,13 +90,31 @@ export function parseBinaryFrames(
       const xOff = hdrLen + 1 + nameLen;
       const x = readF64LE(frame, xOff);
       const y = readF64LE(frame, xOff + 8);
-      if (!isNaN(x) && !isNaN(y)) {
+      if (name && Number.isFinite(x) && Number.isFinite(y)) {
         points.push({ name, x, y });
       }
+      buf = buf.slice(frameLen);
+    } else {
+      // 坏校验可能来自噪声中的伪帧头；仅跳过一个字节，保留其后的真实帧头。
+      buf = buf.slice(1);
     }
-    buf = buf.slice(frameLen);
   }
   return { points, rest: buf };
+}
+
+function matchingHeaderPrefixSuffix(buffer: Uint8Array, header: Uint8Array): number {
+  const maximum = Math.min(buffer.length, Math.max(0, header.length - 1));
+  for (let length = maximum; length > 0; length--) {
+    let matches = true;
+    for (let i = 0; i < length; i++) {
+      if (buffer[buffer.length - length + i] !== header[i]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return length;
+  }
+  return 0;
 }
 
 function readF64LE(buf: Uint8Array, off: number): number {

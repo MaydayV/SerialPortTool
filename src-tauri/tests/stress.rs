@@ -2,7 +2,7 @@
 use serial_aid_lib::conn::{ConnConfig, ConnManager, TcpUdpConfig};
 use std::io::Write;
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -10,19 +10,17 @@ use tauri::Listener;
 
 #[test]
 fn high_frequency_rx_stress() {
-    // 高速 TCP 数据源（3 秒全速）
+    // 高频 TCP 数据源（固定 16 MiB，必须完整到达）
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let stop = Arc::new(AtomicBool::new(false));
     let sent_bytes = Arc::new(AtomicUsize::new(0));
 
-    let stop2 = stop.clone();
     let sent2 = sent_bytes.clone();
-    thread::spawn(move || {
+    let producer = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         let chunk = vec![0xAAu8; 4096];
-        while !stop2.load(Ordering::SeqCst) {
-            let _ = stream.write_all(&chunk);
+        for _ in 0..4096 {
+            stream.write_all(&chunk).unwrap();
             sent2.fetch_add(chunk.len(), Ordering::SeqCst);
         }
         let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -50,15 +48,19 @@ fn high_frequency_rx_stress() {
         mode: "client".into(),
         target: format!("127.0.0.1:{}", port),
         port,
+        local_port: 0,
         auto_reconnect: false,
         reconnect_interval: 1.0,
     });
     manager.open(cfg, handle).expect("open failed");
 
-    // 3 秒压测
-    thread::sleep(Duration::from_secs(3));
-    stop.store(true, Ordering::SeqCst);
-    thread::sleep(Duration::from_millis(300));
+    producer.join().unwrap();
+    for _ in 0..500 {
+        if rx_bytes.load(Ordering::SeqCst) >= sent_bytes.load(Ordering::SeqCst) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 
     let sent = sent_bytes.load(Ordering::SeqCst);
     let received = rx_bytes.load(Ordering::SeqCst);
@@ -69,11 +71,10 @@ fn high_frequency_rx_stress() {
         sent,
         received,
         frames,
-        received as f64 / 3.0 / 1024.0 / 1024.0
+        received as f64 / 1024.0 / 1024.0
     );
 
-    // 数据应基本完整送达（TCP 无损，可能有缓冲延迟）
-    assert!(received > 0, "未收到任何数据");
+    assert_eq!(received, sent, "TCP 压测数据未完整送达");
     assert!(frames > 0, "无帧到达");
 
     manager.close();

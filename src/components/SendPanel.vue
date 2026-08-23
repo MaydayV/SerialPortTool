@@ -93,9 +93,7 @@ async function onFileChange(e: Event) {
   const file = input.files?.[0];
   if (!file) return;
   selectedFile.value = file.name;
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  tx.setFileReader(async () => bytes);
-  await tx.sendFile(file.name);
+  await tx.sendFile(file);
   input.value = "";
 }
 
@@ -112,7 +110,8 @@ function onScheduleChange() {
         <button
           class="opt"
           :class="{ active: tx.sendHexMode }"
-          @click="tx.sendHexMode = !tx.sendHexMode"
+          :aria-pressed="tx.sendHexMode"
+          @click="tx.sendHexMode = !tx.sendHexMode; if (tx.sendHexMode) tx.escapeMode = false"
           title="HEX 发送"
         >
           HEX
@@ -120,7 +119,8 @@ function onScheduleChange() {
         <button
           class="opt"
           :class="{ active: tx.escapeMode }"
-          @click="tx.escapeMode = !tx.escapeMode"
+          :aria-pressed="tx.escapeMode"
+          @click="tx.escapeMode = !tx.escapeMode; if (tx.escapeMode) tx.sendHexMode = false"
           title="转义模式 \\n \\r \\xHH"
         >
           转义
@@ -138,6 +138,7 @@ function onScheduleChange() {
           <button
             class="opt"
             :class="{ active: txMoreOpen }"
+            :aria-expanded="txMoreOpen"
             @click="txMoreOpen = !txMoreOpen"
             title="更多选项"
           >
@@ -150,6 +151,14 @@ function onScheduleChange() {
               @click="tx.appendNewline = !tx.appendNewline; txMoreOpen = false"
             >
               +换行 {{ tx.appendNewline ? "✓" : "" }}
+            </button>
+            <button
+              v-if="tx.appendNewline"
+              class="more-item"
+              :class="{ on: tx.useCRLF }"
+              @click="tx.useCRLF = !tx.useCRLF; txMoreOpen = false"
+            >
+              换行格式 {{ tx.useCRLF ? "CRLF" : "LF" }}
             </button>
             <button
               class="more-item"
@@ -214,13 +223,14 @@ function onScheduleChange() {
       {{ tx.feedback }}
     </div>
     <div class="actions">
-      <button class="send-btn" :disabled="!conn.isConnected()" @click="onSend">
-        {{ conn.status === "connecting" ? "连接中..." : "发送" }}
+      <button class="send-btn" :disabled="!conn.isConnected() || tx.sending" @click="onSend">
+        {{ tx.sending ? "发送中..." : conn.status === "connecting" ? "连接中..." : "发送" }}
       </button>
       <div class="more-wrap">
         <button
           class="action-btn"
           :class="{ active: txActMoreOpen }"
+          :aria-expanded="txActMoreOpen"
           @click="txActMoreOpen = !txActMoreOpen"
           title="更多发送选项"
         >
@@ -240,12 +250,21 @@ function onScheduleChange() {
           >
             ＋快捷
           </button>
-          <button class="more-item" @click="pickFile(); txActMoreOpen = false">
-            发送文件
+          <button class="more-item" @click="pickFile(); txActMoreOpen = false" title="文件以原始字节发送，不套用协议模板">
+            发送文件（原始）
           </button>
         </div>
       </div>
-      <span v-if="selectedFile" class="file-name">{{ selectedFile }}</span>
+      <span v-if="selectedFile" class="file-name">
+        {{ selectedFile }}<template v-if="tx.fileSending"> · {{ tx.fileProgress }}%</template>
+      </span>
+      <button
+        v-if="tx.fileSending"
+        class="action-btn danger"
+        @click="tx.cancelFile()"
+      >
+        取消
+      </button>
       <input
         ref="fileInput"
         type="file"
@@ -262,14 +281,14 @@ function onScheduleChange() {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  border-left: 1px solid rgba(0, 0, 0, 0.07);
+  border-left: 1px solid var(--panel-border);
 }
 .toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 6px 10px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  border-bottom: 1px solid var(--panel-border);
 }
 .title {
   font-weight: 600;
@@ -291,9 +310,9 @@ function onScheduleChange() {
   cursor: pointer;
 }
 .opt.active {
-  background: #0a84ff;
+  background: var(--btn-primary-bg);
   color: #fff;
-  border-color: #0a84ff;
+  border-color: var(--btn-primary-bg);
 }
 .interval-input {
   width: 60px;
@@ -362,19 +381,19 @@ function onScheduleChange() {
   cursor: pointer;
 }
 .mini-btn:hover {
-  border-color: #0a84ff;
-  color: #0a84ff;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .mini-btn.danger:hover {
-  border-color: #ff3b30;
-  color: #ff3b30;
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .send-feedback {
   margin: 0 10px 4px;
   padding: 4px 8px;
   border-radius: 5px;
-  background: rgba(255, 159, 10, 0.14);
-  color: #a86000;
+  background: var(--warning-soft);
+  color: var(--warning);
   font-size: 11.5px;
 }
 .actions {
@@ -383,10 +402,10 @@ function onScheduleChange() {
   align-items: center;
   flex-wrap: wrap;
   padding: 8px 10px;
-  border-top: 1px solid rgba(0, 0, 0, 0.07);
+  border-top: 1px solid var(--panel-border);
 }
 .send-btn {
-  background: #0a84ff;
+  background: var(--btn-primary-bg);
   color: #fff;
   border: none;
   border-radius: 8px;
@@ -398,7 +417,7 @@ function onScheduleChange() {
   flex-shrink: 0;
 }
 .send-btn:hover {
-  background: #0a7ae0;
+  background: var(--btn-primary-hover);
 }
 .send-btn:disabled {
   background: #c7c7cc;
@@ -416,8 +435,8 @@ function onScheduleChange() {
   flex-shrink: 0;
 }
 .action-btn:hover {
-  border-color: #0a84ff;
-  color: #0a84ff;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .file-name {
   font-size: 12px;

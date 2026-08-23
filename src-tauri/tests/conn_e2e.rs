@@ -82,6 +82,7 @@ fn tcp_client_roundtrip() {
         mode: "client".into(),
         target: format!("127.0.0.1:{}", port),
         port,
+        local_port: 0,
         auto_reconnect: false,
         reconnect_interval: 1.0,
     });
@@ -114,12 +115,22 @@ fn tcp_server_broadcast() {
     let manager = ConnManager::new();
     let app = tauri::test::mock_app();
     let handle = app.handle().clone();
+    let peers = Arc::new(Mutex::new(Vec::new()));
+    let peers2 = peers.clone();
+    let _ = app.listen("rx-data", move |event| {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            if let Some(peer) = payload["peer"].as_str() {
+                peers2.lock().unwrap().push(peer.to_string());
+            }
+        }
+    });
 
     let cfg = ConnConfig::TcpUdp(TcpUdpConfig {
         protocol: "tcp".into(),
         mode: "server".into(),
         target: String::new(),
         port,
+        local_port: 0,
         auto_reconnect: false,
         reconnect_interval: 1.0,
     });
@@ -134,6 +145,10 @@ fn tcp_server_broadcast() {
     });
 
     thread::sleep(Duration::from_millis(300));
+    assert!(
+        peers.lock().unwrap().iter().any(|peer| peer.contains('#')),
+        "TCP Server RX 事件缺少稳定客户端来源"
+    );
     manager.send(b"server-bcast").expect("broadcast failed");
 
     let got = client.join().unwrap();
@@ -176,8 +191,9 @@ fn udp_client_roundtrip() {
     let cfg = ConnConfig::TcpUdp(TcpUdpConfig {
         protocol: "udp".into(),
         mode: "client".into(),
-        target: format!("127.0.0.1:{}", port),
+        target: format!("localhost:{}", port),
         port: 0,
+        local_port: 0,
         auto_reconnect: false,
         reconnect_interval: 1.0,
     });
@@ -218,6 +234,7 @@ fn udp_server_replies_to_last_sender() {
                 mode: "server".into(),
                 target: String::new(),
                 port,
+                local_port: 0,
                 auto_reconnect: false,
                 reconnect_interval: 1.0,
             }),
@@ -239,5 +256,69 @@ fn udp_server_replies_to_last_sender() {
     let (n, _) = client.recv_from(&mut buf).expect("UDP reply missing");
     assert_eq!(&buf[..n], b"reply");
 
+    manager.close();
+}
+
+#[test]
+fn udp_large_datagram_is_not_truncated_and_has_peer() {
+    use std::net::UdpSocket;
+
+    let probe = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let manager = ConnManager::new();
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    let received = Arc::new(Mutex::new(Vec::<(usize, Option<String>)>::new()));
+    let received2 = received.clone();
+    let _ = app.listen("rx-data", move |event| {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let len = payload["data"]
+                .as_array()
+                .map(|data| data.len())
+                .unwrap_or(0);
+            let peer = payload["peer"].as_str().map(str::to_string);
+            received2.lock().unwrap().push((len, peer));
+        }
+    });
+    manager
+        .open(
+            ConnConfig::TcpUdp(TcpUdpConfig {
+                protocol: "udp".into(),
+                mode: "server".into(),
+                target: String::new(),
+                port,
+                local_port: 0,
+                auto_reconnect: false,
+                reconnect_interval: 1.0,
+            }),
+            handle,
+        )
+        .expect("open UDP server failed");
+
+    let client = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    // macOS defaults to a UDP datagram limit below 64 KiB. 8 KiB is portable
+    // enough for CI while still proving that the old 4 KiB receive buffer no
+    // longer truncates a datagram.
+    let payload = vec![0x5au8; 8 * 1024];
+    client
+        .send_to(&payload, ("127.0.0.1", port))
+        .expect("large UDP send failed");
+    for _ in 0..100 {
+        if !received.lock().unwrap().is_empty() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let frames = received.lock().unwrap();
+    assert!(
+        frames
+            .iter()
+            .any(|(len, peer)| *len == payload.len() && peer.is_some()),
+        "大 UDP 数据报被截断或缺少来源: {:?}",
+        *frames
+    );
+    drop(frames);
     manager.close();
 }

@@ -3,7 +3,7 @@
 [![Tauri 2](https://img.shields.io/badge/Tauri-2.0-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
 [![Vue 3](https://img.shields.io/badge/Vue-3.5-42B883?logo=vuedotjs&logoColor=white)](https://vuejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![Rust](https://img.shields.io/badge/Rust-1.70+-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-stable-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)]()
 
 跨平台串口 / 网络调试助手，使用 **Tauri 2 + Vue 3 + TypeScript** 从零开发。参考 [COMTool](https://github.com/Neutree/COMTool) 的功能逻辑，提供串口调试、TCP/UDP 调试、协议帧解析、波形曲线、连接配置收藏等完整能力，界面专注核心操作、低频功能折叠收纳。
@@ -14,7 +14,7 @@
 
 ### 连接管理
 - **串口调试**：端口自动检测 + 手动输入，波特率任意值，数据位 / 校验位 / 停止位 / 流控全配置
-- **TCP / UDP 调试**：支持客户端与服务端模式，任意目标地址与端口
+- **TCP / UDP 调试**：支持客户端与服务端模式、域名 / IPv4 / IPv6、UDP 客户端本地端口
 - **连接配置收藏**：一键保存当前连接配置，快速切换应用，支持重命名与删除
 - 空格键快速开关连接，断线状态实时提示
 
@@ -25,25 +25,28 @@
 - 多编码支持：UTF-8 / ASCII / GBK / GB2312 / GB18030 / UTF-16
 - **关键字过滤**：按文本或 HEX 过滤接收内容，实时统计匹配条数
 - **暂停缓冲模式**：暂停仅停止自动滚动，数据继续接收缓冲，恢复即回到最新
-- 发送 / 接收帧数与字节数统计，实时速率（B/s）显示
-- 接收日志落盘（可选）
+- 发送 / 接收数据块与实际线上字节数统计，实时速率（B/s）显示
+- 接收日志落盘（可选，始终保存无损原始 HEX）
+- TCP Server / UDP 接收显示来源地址，多客户端协议缓冲相互隔离
 
 ### 发送区
 - HEX / 转义（`\n` `\r` `\xHH`）/ 自动追加换行
 - **发送历史**（保留最近 20 条，可单条删除 / 清空）
 - **定时发送**：可调间隔（ms），支持暂停与恢复
 - **快捷指令**：常用指令一键保存、点击即发
-- **文件发送**：选择文件按字节发送
+- **文件发送**：选择文件按原始字节分块发送；与手动/定时发送互斥，不会交叉
 - `Ctrl+Enter` 快捷发送
 
 ### 协议引擎
-- **帧模板配置化**：帧头 / 长度域 / CRC 校验 / 负载长度偏移全参数可配
+- **帧模板配置化**：帧头 / 帧尾 / 长度域 / CRC 校验 / 校验字节序 / 负载长度偏移全参数可配
 - 接收侧自动解帧、CRC 校验，坏帧统计
 - 发送侧自动组帧
 - 模板导入 / 导出（JSON）
+- 流式解帧要求模板包含长度域或帧尾；无边界 CRC 模板仅用于安全组帧
 
 ### 波形曲线
 - 基于 ECharts 的实时波形显示，从接收字节流按曲线协议解析绘制
+- 波形解析需明确开启；开启后切换到收发页仍持续采集，并限制曲线/点数避免失控
 
 ### 界面体验
 - 深色 / 浅色主题切换
@@ -85,6 +88,18 @@ npm run tauri build
 ```
 
 产物输出到 `src-tauri/target/release/bundle/`，支持 dmg（macOS）、msi/nsis（Windows）、deb/appimage（Linux）。
+
+### Mac App Store
+
+工程包含独立的 Mac App Store 沙盒、隐私清单、签名、Universal PKG、在线验证和上传流程。先运行静态检查：
+
+```bash
+npm run appstore:check
+```
+
+证书与 provisioning profile 的准备、环境变量和 GitHub Actions Secrets 详见 [Mac App Store 发布指南](docs/MAC_APP_STORE.md)。这些账号凭据不会提交到仓库。
+
+隐私说明见 [PRIVACY.md](PRIVACY.md)。应用不集成广告、分析或跟踪，串口与协议数据默认仅在本机处理。
 
 ## 📁 目录结构
 

@@ -3,3 +3,11 @@ dist/
 src-tauri/target/
 *.log
 .DS_Store
+
+# Mac App Store signing material and generated bundles (never commit credentials)
+src-tauri/tauri.appstore.conf.json
+src-tauri/macos/AppStore.entitlements.generated.plist
+src-tauri/macos/*.provisionprofile
+private_keys/
+AuthKey_*.p8
+artifacts/app-store/

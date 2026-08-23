@@ -121,12 +121,17 @@ export function computeChecksum(algo: ChecksumAlgo, data: Uint8Array): number {
   }
 }
 
-/** 校验值写入字节数组（小端） */
-export function checksumToBytes(algo: ChecksumAlgo, value: number): Uint8Array {
+/** 校验值写入字节数组，默认小端。 */
+export function checksumToBytes(
+  algo: ChecksumAlgo,
+  value: number,
+  endian: "little" | "big" = "little"
+): Uint8Array {
   const info = CHECKSUM_ALGOS.find((a) => a.id === algo)!;
   const out = new Uint8Array(info.bytes);
   for (let i = 0; i < info.bytes; i++) {
-    out[i] = (value >>> (8 * i)) & 0xff;
+    const significance = endian === "little" ? i : out.length - 1 - i;
+    out[i] = (value >>> (8 * significance)) & 0xff;
   }
   return out;
 }

@@ -7,6 +7,8 @@ import { useRxStore } from "./rx";
 import { useProtocolStore } from "./protocol";
 import { hexToBytes, escapeToBytes } from "../utils/bytes";
 
+const MAX_DIRECT_SEND_BYTES = 4 * 1024 * 1024;
+
 export const useTxStore = defineStore("tx", () => {
   const sendText = ref("");
   const sendHexMode = ref(false);
@@ -17,10 +19,30 @@ export const useTxStore = defineStore("tx", () => {
   const scheduled = ref(false); // 定时发送
   const scheduledInterval = ref(1000); // ms
   const sending = ref(false);
+  const fileSending = ref(false);
+  const fileProgress = ref(0);
+  const currentFileName = ref("");
 
   const feedback = ref("");
   let feedbackTimer: ReturnType<typeof setTimeout> | null = null;
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let fileCancelRequested = false;
+  let queueTail: Promise<void> = Promise.resolve();
+
+  /** 所有发送共用同一把异步锁，保证文件块、定时和手动数据不会交叉。 */
+  async function withSendLock<T>(job: () => Promise<T>): Promise<T> {
+    const previous = queueTail;
+    let release!: () => void;
+    queueTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await job();
+    } finally {
+      release();
+    }
+  }
 
   function notify(message: string) {
     feedback.value = message;
@@ -31,7 +53,10 @@ export const useTxStore = defineStore("tx", () => {
   function encodeText(text: string): Uint8Array {
     let raw: Uint8Array;
     if (sendHexMode.value) {
-      raw = hexToBytes(text) ?? new Uint8Array(0);
+      const parsed = hexToBytes(text);
+      // 非法 HEX 不得因为开启“追加换行”而退化成只发送换行。
+      if (parsed === null) return new Uint8Array(0);
+      raw = parsed;
     } else if (escapeMode.value) {
       raw = escapeToBytes(text);
     } else {
@@ -82,14 +107,21 @@ export const useTxStore = defineStore("tx", () => {
       notify("发送内容为空或 HEX 格式无效");
       return false;
     }
+    if (bytes.length > MAX_DIRECT_SEND_BYTES) {
+      notify("单次发送不能超过 4 MiB，请改用文件分块发送");
+      return false;
+    }
     try {
-      // 协议组帧（若启用）
-      const proto = useProtocolStore();
-      const out = proto.processTx(bytes);
-      await api.connSend(Array.from(out));
-      // 发送回显到接收区（方向 tx，回显原始负载）
-      rx.append(bytes, "tx");
-      return true;
+      return await withSendLock(async () => {
+        if (!conn.isConnected()) throw new Error("连接已断开");
+        // 协议组帧在真正发送前执行；失败会明确抛错，不会静默透传。
+        const proto = useProtocolStore();
+        const out = proto.processTx(bytes);
+        const written = await api.connSend(Array.from(out));
+        // 回显、统计和日志必须与实际线上字节一致。
+        rx.append(out, "tx", Date.now(), undefined, true, written);
+        return true;
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       notify(`发送失败：${message}`);
@@ -115,15 +147,45 @@ export const useTxStore = defineStore("tx", () => {
     }
   }
 
-  /** 定时发送开关 */
+  function normalizedInterval() {
+    const value = Number(scheduledInterval.value);
+    return Number.isFinite(value) ? Math.min(3_600_000, Math.max(10, value)) : 1000;
+  }
+
+  async function scheduledTick() {
+    if (!scheduled.value) return;
+    const ok = await doSend(nowBytes());
+    if (!ok) {
+      scheduled.value = false;
+      timer = null;
+      return;
+    }
+    if (scheduled.value) timer = setTimeout(scheduledTick, normalizedInterval());
+  }
+
+  function startSchedule() {
+    if (timer) clearTimeout(timer);
+    scheduledInterval.value = normalizedInterval();
+    timer = setTimeout(scheduledTick, scheduledInterval.value);
+  }
+
+  /** 定时发送开关（上一轮完成后再调度，避免慢连接堆积请求） */
   function toggleScheduled() {
     scheduled.value = !scheduled.value;
     if (scheduled.value) {
-      timer = setInterval(() => {
-        doSend(nowBytes());
-      }, scheduledInterval.value);
+      if (!useConnStore().isConnected()) {
+        scheduled.value = false;
+        notify("请先连接设备再开启定时发送");
+        return;
+      }
+      if (nowBytes().length === 0) {
+        scheduled.value = false;
+        notify("请先输入有效的定时发送内容");
+        return;
+      }
+      startSchedule();
     } else if (timer) {
-      clearInterval(timer);
+      clearTimeout(timer);
       timer = null;
     }
   }
@@ -131,10 +193,7 @@ export const useTxStore = defineStore("tx", () => {
   /** 定时间隔变更时重启定时器 */
   function updateInterval() {
     if (scheduled.value) {
-      if (timer) clearInterval(timer);
-      timer = setInterval(() => {
-        doSend(nowBytes());
-      }, scheduledInterval.value);
+      startSchedule();
     }
   }
 
@@ -161,32 +220,63 @@ export const useTxStore = defineStore("tx", () => {
     return doSend(encodeText(item.text));
   }
 
-  /** 发送文件（读文件字节后发送）——由组件注入 readFileBytes 实现 */
-  let fileReader: (path: string) => Promise<Uint8Array> = async () => new Uint8Array();
-  function setFileReader(fn: (path: string) => Promise<Uint8Array>) {
-    fileReader = fn;
-  }
-
-  async function sendFile(path: string) {
+  /** 分块发送文件：内存占用固定，并支持进度和取消。 */
+  async function sendFile(file: File) {
+    if (fileSending.value) return false;
+    const conn = useConnStore();
+    if (!conn.isConnected()) {
+      notify("未连接，无法发送文件");
+      return false;
+    }
+    if (file.size === 0) {
+      notify("文件为空，未发送");
+      return false;
+    }
+    const CHUNK_SIZE = 64 * 1024;
+    fileSending.value = true;
+    fileCancelRequested = false;
+    fileProgress.value = 0;
+    currentFileName.value = file.name;
     try {
-      const bytes = await fileReader(path);
-      if (bytes.length === 0) {
-        notify("文件为空，未发送");
+      const completed = await withSendLock(async () => {
+        for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
+          if (fileCancelRequested) return false;
+          if (!conn.isConnected()) throw new Error("连接已断开");
+          const end = Math.min(file.size, offset + CHUNK_SIZE);
+          const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+          // 文件定义为原始字节传输；整次文件发送持有发送锁，块之间不会插入其他数据。
+          const written = await api.connSend(Array.from(bytes));
+          useRxStore().append(bytes, "tx", Date.now(), undefined, true, written);
+          fileProgress.value = Math.round((end / file.size) * 100);
+        }
+        return true;
+      });
+      if (!completed) {
+        notify("文件发送已取消");
         return false;
       }
-      return doSend(bytes);
+      notify(`文件发送完成：${file.name}`);
+      return true;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       notify(`文件发送失败：${message}`);
       return false;
+    } finally {
+      fileSending.value = false;
+      fileCancelRequested = false;
     }
+  }
+
+  function cancelFile() {
+    fileCancelRequested = true;
   }
 
   function stopAll() {
     if (timer) {
-      clearInterval(timer);
+      clearTimeout(timer);
       timer = null;
     }
+    fileCancelRequested = true;
     scheduled.value = false;
   }
 
@@ -200,6 +290,9 @@ export const useTxStore = defineStore("tx", () => {
     scheduled,
     scheduledInterval,
     sending,
+    fileSending,
+    fileProgress,
+    currentFileName,
     feedback,
     customItems,
     send,
@@ -212,7 +305,7 @@ export const useTxStore = defineStore("tx", () => {
     removeCustomItem,
     sendCustom,
     sendFile,
-    setFileReader,
+    cancelFile,
     stopAll,
     nowBytes,
   };

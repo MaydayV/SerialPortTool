@@ -22,11 +22,15 @@ export interface FrameTemplate {
   checksum: ChecksumAlgo;
   checksumRange: "all" | "payload"; // 校验覆盖范围
   checksumPosition: "tail" | "before_tail"; // 校验位置
+  checksumEndian: "little" | "big";
   description: string;
 }
 
-export const MAX_FRAME_LENGTH = 16 * 1024 * 1024;
+export const MAX_FRAME_LENGTH = 4 * 1024 * 1024;
 const VALID_LENGTH_BYTES = [1, 2, 4];
+const MAX_MARKER_BYTES = 1024;
+const MAX_TEMPLATE_NAME = 100;
+const MAX_TEMPLATE_DESCRIPTION = 1000;
 const DEFAULT_LENGTH: LengthField = {
   enabled: false,
   offset: 0,
@@ -44,6 +48,7 @@ export const DEFAULT_TEMPLATES: FrameTemplate[] = [
     checksum: "none",
     checksumRange: "all",
     checksumPosition: "tail",
+    checksumEndian: "little",
     description: "不解析，原始字节流",
   },
   {
@@ -54,7 +59,8 @@ export const DEFAULT_TEMPLATES: FrameTemplate[] = [
     checksum: "crc16_modbus",
     checksumRange: "all",
     checksumPosition: "tail",
-    description: "帧尾追加 CRC16-MODBUS 小端",
+    checksumEndian: "little",
+    description: "帧尾追加 CRC16-MODBUS 小端；无边界，仅支持发送组帧",
   },
   {
     name: "SUM 校验帧",
@@ -70,6 +76,7 @@ export const DEFAULT_TEMPLATES: FrameTemplate[] = [
     checksum: "sum8",
     checksumRange: "all",
     checksumPosition: "tail",
+    checksumEndian: "little",
     description: "AA 55 + 长度 + 数据 + SUM 校验",
   },
 ];
@@ -112,11 +119,17 @@ function isChecksumAlgo(value: unknown): value is ChecksumAlgo {
  */
 export function normalizeFrameTemplate(input: unknown): FrameTemplate | null {
   if (!isRecord(input)) return null;
-  if (typeof input.name !== "string" || !input.name.trim()) return null;
+  if (
+    typeof input.name !== "string" ||
+    !input.name.trim() ||
+    input.name.trim().length > MAX_TEMPLATE_NAME
+  ) return null;
 
   const header = normalizeHex(input.header === undefined ? "" : input.header);
   const tail = normalizeHex(input.tail === undefined ? "" : input.tail);
   if (header === null || tail === null) return null;
+  if (header.replace(/\s/g, "").length / 2 > MAX_MARKER_BYTES) return null;
+  if (tail.replace(/\s/g, "").length / 2 > MAX_MARKER_BYTES) return null;
 
   const rawLength = input.length === undefined ? {} : input.length;
   if (!isRecord(rawLength)) return null;
@@ -147,12 +160,15 @@ export function normalizeFrameTemplate(input: unknown): FrameTemplate | null {
   const checksum = input.checksum === undefined ? "none" : input.checksum;
   const checksumRange = input.checksumRange === undefined ? "all" : input.checksumRange;
   const checksumPosition = input.checksumPosition === undefined ? "tail" : input.checksumPosition;
+  const checksumEndian = input.checksumEndian === undefined ? "little" : input.checksumEndian;
   const description = input.description === undefined ? "" : input.description;
   if (
     !isChecksumAlgo(checksum) ||
     (checksumRange !== "all" && checksumRange !== "payload") ||
     (checksumPosition !== "tail" && checksumPosition !== "before_tail") ||
-    typeof description !== "string"
+    (checksumEndian !== "little" && checksumEndian !== "big") ||
+    typeof description !== "string" ||
+    description.length > MAX_TEMPLATE_DESCRIPTION
   ) {
     return null;
   }
@@ -165,6 +181,7 @@ export function normalizeFrameTemplate(input: unknown): FrameTemplate | null {
     checksum,
     checksumRange,
     checksumPosition,
+    checksumEndian,
     description,
   };
 }
@@ -172,6 +189,12 @@ export function normalizeFrameTemplate(input: unknown): FrameTemplate | null {
 /** 返回模板是否包含可安全执行的完整结构。 */
 export function validateFrameTemplate(input: unknown): boolean {
   return normalizeFrameTemplate(input) !== null;
+}
+
+/** 流式接收必须有长度域或帧尾，否则无法区分半帧与完整帧。 */
+export function canInferFrameBoundary(input: unknown): boolean {
+  const template = normalizeFrameTemplate(input);
+  return !!template && (template.length.enabled || template.tail.length > 0);
 }
 
 function readLength(frame: Uint8Array, lf: LengthField): number {
@@ -277,8 +300,8 @@ export function extractFrames(
       frameLen =
         header.length + end + tail.length + (t.checksumPosition === "tail" ? csLen : 0);
     } else if (csLen > 0) {
-      // 无头无尾有校验无法从流中推断边界，只能把当前缓冲当作一帧。
-      frameLen = buf.length;
+      // 无长度/帧尾时不能安全猜测边界：保留数据，不把半帧误判并丢弃。
+      break;
     }
 
     if (frameLen <= 0 || frameLen > MAX_FRAME_LENGTH) {
@@ -303,7 +326,11 @@ export function extractFrames(
         buf = resyncAfterFailure(buf, header);
         continue;
       }
-      const expected = checksumToBytes(t.checksum, computeChecksum(t.checksum, range));
+      const expected = checksumToBytes(
+        t.checksum,
+        computeChecksum(t.checksum, range),
+        t.checksumEndian
+      );
       const actual = frame.slice(csStart, csStart + csLen);
       if (!bytesEqual(actual, expected)) {
         errors++;
@@ -328,10 +355,10 @@ function resyncAfterFailure(buffer: Uint8Array, header: Uint8Array): Uint8Array 
   return keep > 0 ? buffer.slice(-keep) : new Uint8Array(0);
 }
 
-/** 组帧：把负载数据按模板封装成完整帧。非法模板时返回原始负载副本，避免发出损坏帧。 */
+/** 组帧：把负载数据按模板封装成完整帧；无法组帧时明确报错。 */
 export function packFrame(payload: Uint8Array, template: FrameTemplate): Uint8Array {
   const t = normalizeFrameTemplate(template);
-  if (!t) return payload.slice();
+  if (!t) throw new Error("协议模板无效，已阻止发送");
 
   const header = hexToBytes(t.header)!;
   const tail = hexToBytes(t.tail)!;
@@ -339,8 +366,19 @@ export function packFrame(payload: Uint8Array, template: FrameTemplate): Uint8Ar
   const csLen = checksumBytes(t);
   const prefixLength = lf.enabled ? lf.offset : header.length;
   const payloadStart = lf.enabled ? lf.offset + lf.bytes : header.length;
+  const totalLength =
+    prefixLength +
+    (lf.enabled ? lf.bytes : 0) +
+    payload.length +
+    csLen +
+    tail.length;
 
-  if (prefixLength < header.length || payloadStart > MAX_FRAME_LENGTH) return payload.slice();
+  if (prefixLength < header.length || payloadStart > MAX_FRAME_LENGTH) {
+    throw new Error("协议字段偏移超出允许范围，已阻止发送");
+  }
+  if (!Number.isSafeInteger(totalLength) || totalLength > MAX_FRAME_LENGTH) {
+    throw new Error("协议帧超过 4 MiB 上限，已阻止发送");
+  }
 
   let frame = new Uint8Array(prefixLength);
   frame.set(header);
@@ -350,7 +388,9 @@ export function packFrame(payload: Uint8Array, template: FrameTemplate): Uint8Ar
       : payload.length + csLen + tail.length;
     const maxLengthValue = 2 ** (8 * lf.bytes) - 1;
     if (lengthValue < 0 || lengthValue > maxLengthValue || lengthValue > MAX_FRAME_LENGTH) {
-      return payload.slice();
+      throw new Error(
+        `负载过长：长度字段 ${lf.bytes}B 无法表示 ${lengthValue} 字节，已阻止发送`
+      );
     }
     const lengthBytes = new Uint8Array(lf.bytes);
     for (let i = 0; i < lf.bytes; i++) {
@@ -364,12 +404,18 @@ export function packFrame(payload: Uint8Array, template: FrameTemplate): Uint8Ar
   if (csLen > 0) {
     if (t.checksumPosition === "before_tail") {
       const range = checksumInputForFrame(t, frame, 0, frame.length)!;
-      frame = concat(frame, checksumToBytes(t.checksum, computeChecksum(t.checksum, range)));
+      frame = concat(
+        frame,
+        checksumToBytes(t.checksum, computeChecksum(t.checksum, range), t.checksumEndian)
+      );
       frame = concat(frame, tail);
     } else {
       frame = concat(frame, tail);
       const range = checksumInputForFrame(t, frame, tail.length, frame.length)!;
-      frame = concat(frame, checksumToBytes(t.checksum, computeChecksum(t.checksum, range)));
+      frame = concat(
+        frame,
+        checksumToBytes(t.checksum, computeChecksum(t.checksum, range), t.checksumEndian)
+      );
     }
   } else {
     frame = concat(frame, tail);

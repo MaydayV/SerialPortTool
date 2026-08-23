@@ -188,31 +188,42 @@ impl SerialConn {
 }
 
 fn build_port(cfg: &SerialConfig) -> Result<Box<dyn serialport::SerialPort>, String> {
+    if cfg.port.trim().is_empty() {
+        return Err("串口名称为空".into());
+    }
+    if cfg.baudrate == 0 {
+        return Err("波特率必须大于 0".into());
+    }
     let mut builder = serialport::new(&cfg.port, cfg.baudrate).timeout(Duration::from_millis(50));
     builder = match cfg.data_bits {
         5 => builder.data_bits(serialport::DataBits::Five),
         6 => builder.data_bits(serialport::DataBits::Six),
         7 => builder.data_bits(serialport::DataBits::Seven),
-        _ => builder.data_bits(serialport::DataBits::Eight),
+        8 => builder.data_bits(serialport::DataBits::Eight),
+        _ => return Err(format!("不支持的数据位: {}", cfg.data_bits)),
     };
     builder = match cfg.parity.as_str() {
         "odd" => builder.parity(serialport::Parity::Odd),
         "even" => builder.parity(serialport::Parity::Even),
-        _ => builder.parity(serialport::Parity::None),
+        "none" => builder.parity(serialport::Parity::None),
+        _ => return Err(format!("不支持的校验方式: {}", cfg.parity)),
     };
-    builder = if cfg.stop_bits >= 2.0 {
-        builder.stop_bits(serialport::StopBits::Two)
-    } else {
-        builder.stop_bits(serialport::StopBits::One)
+    builder = match cfg.stop_bits {
+        value if (value - 1.0).abs() < f32::EPSILON => builder.stop_bits(serialport::StopBits::One),
+        value if (value - 2.0).abs() < f32::EPSILON => builder.stop_bits(serialport::StopBits::Two),
+        _ => return Err(format!("不支持的停止位: {}", cfg.stop_bits)),
     };
     builder = match cfg.flow_control.as_str() {
         "software" => builder.flow_control(serialport::FlowControl::Software),
         "hardware" => builder.flow_control(serialport::FlowControl::Hardware),
-        _ => builder.flow_control(serialport::FlowControl::None),
+        "none" => builder.flow_control(serialport::FlowControl::None),
+        _ => return Err(format!("不支持的流控方式: {}", cfg.flow_control)),
     };
     let mut port = builder.open().map_err(|e| e.to_string())?;
-    let _ = port.write_request_to_send(cfg.rts);
-    let _ = port.write_data_terminal_ready(cfg.dtr);
+    port.write_request_to_send(cfg.rts)
+        .map_err(|e| format!("设置 RTS 失败: {}", e))?;
+    port.write_data_terminal_ready(cfg.dtr)
+        .map_err(|e| format!("设置 DTR 失败: {}", e))?;
     Ok(port)
 }
 
@@ -239,9 +250,15 @@ fn sleep_until(stop: &AtomicBool, duration: Duration) -> bool {
 pub struct RxPayload {
     pub data: Vec<u8>,
     pub ts: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
 }
 
 pub fn emit_rx<R: Runtime>(app: &AppHandle<R>, data: &[u8]) {
+    emit_rx_from(app, data, None);
+}
+
+pub fn emit_rx_from<R: Runtime>(app: &AppHandle<R>, data: &[u8], peer: Option<String>) {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -252,6 +269,7 @@ pub fn emit_rx<R: Runtime>(app: &AppHandle<R>, data: &[u8]) {
         RxPayload {
             data: data.to_vec(),
             ts,
+            peer,
         },
     );
 }
@@ -270,4 +288,50 @@ pub fn emit_status<R: Runtime>(app: &AppHandle<R>, status: &str, msg: String) {
             msg,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn named_config() -> SerialConfig {
+        SerialConfig {
+            port: "test-port-that-must-not-be-opened".into(),
+            ..SerialConfig::default()
+        }
+    }
+
+    #[test]
+    fn rejects_empty_port_before_opening() {
+        assert!(build_port(&SerialConfig::default())
+            .err()
+            .unwrap()
+            .contains("串口名称为空"));
+    }
+
+    #[test]
+    fn rejects_zero_baudrate_before_opening() {
+        let mut config = named_config();
+        config.baudrate = 0;
+        assert!(build_port(&config).err().unwrap().contains("波特率"));
+    }
+
+    #[test]
+    fn rejects_invalid_serial_parameters_before_opening() {
+        let mut config = named_config();
+        config.data_bits = 9;
+        assert!(build_port(&config).err().unwrap().contains("数据位"));
+
+        let mut config = named_config();
+        config.parity = "mark".into();
+        assert!(build_port(&config).err().unwrap().contains("校验方式"));
+
+        let mut config = named_config();
+        config.stop_bits = 1.5;
+        assert!(build_port(&config).err().unwrap().contains("停止位"));
+
+        let mut config = named_config();
+        config.flow_control = "invalid".into();
+        assert!(build_port(&config).err().unwrap().contains("流控"));
+    }
 }

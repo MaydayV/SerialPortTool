@@ -1,0 +1,2 @@
+CFBundleDisplayName = "SerialPortTool";
+NSLocalNetworkUsageDescription = "Connects to TCP/UDP devices you specify on the local network and receives debugging data in server mode.";

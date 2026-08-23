@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useProtocolStore } from "../stores/protocol";
 import { CHECKSUM_ALGOS } from "../utils/crc";
 import type { FrameTemplate } from "../utils/protocol";
+import { saveTextFile } from "../utils/save";
 
 const store = useProtocolStore();
 const editing = ref(false);
@@ -18,17 +19,9 @@ function startEdit() {
 
 function saveEdit() {
   if (!draft.value.name.trim()) return;
-  // 若改名且与原模板不同：新增；否则更新
-  if (draft.value.name !== store.activeName) {
-    if (!store.addTemplate({ ...draft.value })) {
-      alert("模板名称已存在或内容无效");
-      return;
-    }
-  } else {
-    if (!store.updateTemplate(store.activeName, { ...draft.value })) {
-      alert("模板内容无效，请检查 HEX、长度和校验配置");
-      return;
-    }
+  if (!store.updateTemplate(store.activeName, { ...draft.value })) {
+    alert("模板名称已存在或内容无效，请检查 HEX、长度和校验配置");
+    return;
   }
   editing.value = false;
 }
@@ -60,6 +53,7 @@ function addNew() {
     checksum: "none",
     checksumRange: "all",
     checksumPosition: "tail",
+    checksumEndian: "little",
     description: "",
   });
   if (!created) {
@@ -76,18 +70,27 @@ const isPassThrough = computed(
     !store.active.length.enabled &&
     store.active.checksum === "none"
 );
+const rxHasBoundary = computed(() => isPassThrough.value || store.canDecodeActive);
+watch(
+  () => store.canDecodeActive,
+  (safe) => {
+    if (!safe) store.rxEnabled = false;
+  },
+  { immediate: true }
+);
 
 /** 导出模板库到文件 */
-function exportTemplates() {
-  const blob = new Blob([store.exportTemplates()], {
-    type: "application/json",
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "serialaid-templates.json";
-  a.click();
-  URL.revokeObjectURL(url);
+async function exportTemplates() {
+  try {
+    await saveTextFile(
+      "templates",
+      store.exportTemplates(),
+      "serialaid-templates.json",
+      "application/json"
+    );
+  } catch (error) {
+    alert(`导出失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** 导入模板库 */
@@ -99,17 +102,26 @@ async function onImportFile(e: Event) {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
-  const text = await file.text();
-  const res = store.importTemplates(text);
-  if (res.added || res.replaced) {
-    const rejected = res.rejected ? `，拒绝 ${res.rejected} 个坏模板` : "";
-    alert(`导入成功：新增 ${res.added} 个，覆盖 ${res.replaced} 个${rejected}`);
-  } else if (res.rejected) {
-    alert(`导入失败：拒绝 ${res.rejected} 个坏模板`);
-  } else {
-    alert("导入失败：文件格式不正确");
+  try {
+    if (file.size > 2 * 1024 * 1024) {
+      alert("导入失败：模板文件不能超过 2 MiB");
+      return;
+    }
+    const text = await file.text();
+    const res = store.importTemplates(text);
+    if (res.added || res.replaced) {
+      const rejected = res.rejected ? `，拒绝 ${res.rejected} 个坏模板` : "";
+      alert(`导入成功：新增 ${res.added} 个，覆盖 ${res.replaced} 个${rejected}`);
+    } else if (res.rejected) {
+      alert(`导入失败：拒绝 ${res.rejected} 个坏模板`);
+    } else {
+      alert("导入失败：文件格式不正确");
+    }
+  } catch (error) {
+    alert(`导入失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    input.value = "";
   }
-  input.value = "";
 }
 
 /** 删除确认 */
@@ -130,9 +142,16 @@ function onRemove() {
         </option>
       </select>
       <label class="switch">
-        <input type="checkbox" v-model="store.rxEnabled" :disabled="isPassThrough" />
+        <input
+          type="checkbox"
+          v-model="store.rxEnabled"
+          :disabled="isPassThrough || !rxHasBoundary"
+        />
         <span>解帧</span>
       </label>
+      <span v-if="!isPassThrough && !rxHasBoundary" class="desc">
+        缺少长度域/帧尾，仅可组帧
+      </span>
       <label class="switch">
         <input type="checkbox" v-model="store.txEnabled" :disabled="isPassThrough" />
         <span>组帧</span>
@@ -180,22 +199,22 @@ function onRemove() {
     <div v-if="editing" class="edit-form">
       <div class="field">
         <label>名称</label>
-        <input v-model="draft.name" />
+        <input v-model="draft.name" maxlength="100" />
       </div>
       <div class="field">
         <label>帧头 (hex)</label>
-        <input v-model="draft.header" placeholder="AA 55" />
+        <input v-model="draft.header" maxlength="4096" placeholder="AA 55" />
       </div>
       <div class="field">
         <label>帧尾 (hex)</label>
-        <input v-model="draft.tail" placeholder="0D 0A" />
+        <input v-model="draft.tail" maxlength="4096" placeholder="0D 0A" />
       </div>
       <div class="field">
         <label>
           <input type="checkbox" v-model="draft.length.enabled" /> 长度字段
         </label>
         <template v-if="draft.length.enabled">
-          <input v-model.number="draft.length.offset" type="number" class="num" title="偏移" />
+          <input v-model.number="draft.length.offset" type="number" min="0" max="4194304" class="num" title="偏移" />
           <select v-model.number="draft.length.bytes">
             <option :value="1">1B</option>
             <option :value="2">2B</option>
@@ -226,11 +245,15 @@ function onRemove() {
             <option value="tail">帧尾</option>
             <option value="before_tail">帧尾前</option>
           </select>
+          <select v-model="draft.checksumEndian" title="校验值字节序">
+            <option value="little">校验小端</option>
+            <option value="big">校验大端</option>
+          </select>
         </template>
       </div>
       <div class="field">
         <label>说明</label>
-        <input v-model="draft.description" />
+        <input v-model="draft.description" maxlength="1000" />
       </div>
       <div class="actions">
         <button class="mini primary" @click="saveEdit">保存</button>
@@ -274,7 +297,7 @@ function onRemove() {
   cursor: pointer;
 }
 .switch input {
-  accent-color: #0a84ff;
+  accent-color: var(--accent);
 }
 .desc {
   color: var(--text-tertiary);
@@ -316,17 +339,17 @@ function onRemove() {
   cursor: pointer;
 }
 .mini:hover {
-  border-color: #0a84ff;
-  color: #0a84ff;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .mini.primary {
-  background: #0a84ff;
+  background: var(--btn-primary-bg);
   color: #fff;
-  border-color: #0a84ff;
+  border-color: var(--btn-primary-bg);
 }
 .mini.danger:hover {
-  border-color: #ff3b30;
-  color: #ff3b30;
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .mini:disabled {
   opacity: 0.4;

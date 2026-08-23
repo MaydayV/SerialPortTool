@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, defineAsyncComponent } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import {
+  ref,
+  onMounted,
+  onBeforeUnmount,
+  watch,
+  defineAsyncComponent,
+  nextTick,
+} from "vue";
 import ConnectionBar from "./components/ConnectionBar.vue";
 import ProtocolPanel from "./components/ProtocolPanel.vue";
 import ReceivePanel from "./components/ReceivePanel.vue";
 import SendPanel from "./components/SendPanel.vue";
-const GraphPanel = defineAsyncComponent(() => import("./components/GraphPanel.vue"));
+const loadGraphPanel = () => import("./components/GraphPanel.vue");
+const GraphPanel = defineAsyncComponent(loadGraphPanel);
 import { useConnStore } from "./stores/conn";
 import { useRxStore } from "./stores/rx";
 import { useTxStore } from "./stores/tx";
 import { useGraphStore } from "./stores/graph";
 import { loadConfig, initPersistence } from "./stores/persist";
 import { formatTime } from "./utils/bytes";
+import { saveTextFile } from "./utils/save";
 import { api } from "./api";
+import { isTauri } from "@tauri-apps/api/core";
 
 const conn = useConnStore();
 const rx = useRxStore();
@@ -24,6 +33,12 @@ const theme = ref<"light" | "dark" | "system">("light");
 
 // 设置面板
 const showSettings = ref(false);
+const settingsPanel = ref<HTMLDivElement | null>(null);
+let settingsReturnFocus: HTMLElement | null = null;
+
+const splitRatio = ref(0.72);
+const workbenchEl = ref<HTMLDivElement | null>(null);
+let resizing = false;
 
 /** 解析生效主题（system → 跟随系统） */
 function effectiveTheme(): "light" | "dark" {
@@ -37,6 +52,16 @@ function effectiveTheme(): "light" | "dark" {
 watch(theme, () => {
   document.documentElement.dataset.theme = effectiveTheme();
 });
+watch(
+  view,
+  (next) => graph.setViewActive(next === "graph"),
+  { immediate: true }
+);
+watch([() => rx.saveLog, () => rx.logPath], () => {
+  // 关闭日志或切换路径时及时落盘旧缓冲。
+  if (rx.saveLog && !rx.logPath.trim()) rx.saveLog = false;
+  void api.flushLogFiles().catch(() => {});
+});
 // 窗口标题同步连接状态
 const statusTitle: Record<string, string> = {
   connected: "● 已连接",
@@ -48,19 +73,87 @@ watch(
   () => conn.status,
   (s) => {
     document.title = statusTitle[s] ? `${statusTitle[s]} - 串口助手 SerialPortTool` : "串口助手 SerialPortTool";
-  }
+  },
+  { immediate: true }
 );
 let sysMedia: MediaQueryList | null = null;
+function onSystemThemeChange() {
+  if (theme.value === "system") {
+    document.documentElement.dataset.theme = effectiveTheme();
+  }
+}
 function initTheme() {
   document.documentElement.dataset.theme = effectiveTheme();
   if (!sysMedia) {
     sysMedia = window.matchMedia("(prefers-color-scheme: dark)");
-    sysMedia.addEventListener("change", () => {
-      if (theme.value === "system") {
-        document.documentElement.dataset.theme = effectiveTheme();
-      }
-    });
+    sysMedia.addEventListener("change", onSystemThemeChange);
   }
+}
+
+function openSettings() {
+  settingsReturnFocus = document.activeElement as HTMLElement | null;
+  showSettings.value = true;
+  void nextTick(() => settingsPanel.value?.focus());
+}
+
+function closeSettings() {
+  showSettings.value = false;
+  void nextTick(() => settingsReturnFocus?.focus());
+}
+
+function onSettingsKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    closeSettings();
+    return;
+  }
+  if (e.key !== "Tab" || !settingsPanel.value) return;
+  const focusable = Array.from(
+    settingsPanel.value.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  );
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (
+    e.shiftKey &&
+    (document.activeElement === first || document.activeElement === settingsPanel.value)
+  ) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+function beginResize(e: PointerEvent) {
+  resizing = true;
+  (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  updateSplit(e.clientX);
+}
+
+function updateSplit(clientX: number) {
+  const rect = workbenchEl.value?.getBoundingClientRect();
+  if (!rect || rect.width <= 0) return;
+  splitRatio.value = Math.min(0.78, Math.max(0.55, (clientX - rect.left) / rect.width));
+}
+
+function onSplitterMove(e: PointerEvent) {
+  if (resizing) updateSplit(e.clientX);
+}
+
+function endResize() {
+  resizing = false;
+}
+
+function onSplitterKeydown(e: KeyboardEvent) {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  e.preventDefault();
+  const delta = e.key === "ArrowLeft" ? -0.02 : 0.02;
+  splitRatio.value = Math.min(0.78, Math.max(0.55, splitRatio.value + delta));
 }
 
 /** 重置全部配置并刷新 */
@@ -72,33 +165,74 @@ function resetAll() {
 }
 
 /** 导出接收区日志 */
-function exportLog() {
+async function exportLog() {
   const lines = rx.entries.map((e) => {
     const t = rx.showTimestamp ? `[${formatTime(e.ts)}] ` : "";
     const dir = e.dir === "rx" ? "<=" : "=>";
-    const body = rx.rxHexMode ? e.hex : e.text;
-    return `${dir} ${t}${body}`;
+    const source = e.peer ? `[${e.peer}] ` : "";
+    const body = rx.dualMode
+      ? `${rx.getEntryHex(e)} | ${rx.getEntryAscii(e)}`
+      : rx.rxHexMode
+        ? rx.getEntryHex(e)
+        : rx.asciiMode
+          ? rx.getEntryAscii(e)
+          : rx.getEntryText(e);
+    return `${dir} ${t}${source}${body}`;
   });
   if (!lines.length) {
     alert("接收区为空，无日志可导出");
     return;
   }
-  const blob = new Blob(["\ufeff" + lines.join("\n")], {
-    type: "text/plain;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `serialaid-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.log`;
-  a.click();
-  URL.revokeObjectURL(url);
+  try {
+    await saveTextFile(
+      "log",
+      "\ufeff" + lines.join("\n"),
+      `serialaid-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.log`,
+      "text/plain;charset=utf-8"
+    );
+  } catch (error) {
+    alert(`导出失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function chooseLogPath() {
+  if (!isTauri()) {
+    alert("持续写入日志需要在桌面应用中使用");
+    return;
+  }
+  rx.saveLog = false;
+  await api.flushLogFiles().catch(() => {});
+  try {
+    const path = await api.selectOutputFile("log");
+    if (path) {
+      rx.logPath = path;
+      rx.logError = "";
+    }
+  } catch (error) {
+    rx.logError = error instanceof Error ? error.message : String(error);
+  }
 }
 
 // 全局快捷键（非输入框焦点时生效）
 function onGlobalKeydown(e: KeyboardEvent) {
+  if (showSettings.value) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeSettings();
+    }
+    return;
+  }
   // 输入框/文本域/select 内不拦截（保留原生行为）
-  const tag = (e.target as HTMLElement)?.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  const target = e.target as HTMLElement | null;
+  const tag = target?.tagName;
+  if (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    tag === "BUTTON" ||
+    tag === "A" ||
+    target?.isContentEditable
+  ) return;
   if (!e.ctrlKey && !e.metaKey && !e.altKey) {
     switch (e.key.toLowerCase()) {
       case "f5":
@@ -108,12 +242,14 @@ function onGlobalKeydown(e: KeyboardEvent) {
         break;
       case "escape":
         // 清空接收区
+        e.preventDefault();
         rx.clear();
         break;
       case "h":
         // 切换 HEX 显示，并确保与 ASCII 互斥
         rx.rxHexMode = !rx.rxHexMode;
         rx.asciiMode = false;
+        rx.dualMode = false;
         break;
       case "t":
         // 切换时间戳
@@ -137,13 +273,21 @@ onMounted(() => {
   loadConfig(theme);
   initTheme();
   initPersistence(theme);
-  conn.setupListeners();
-  conn.refreshPorts();
-  rx.setup();
+  rx.startRateTimer();
+  if (isTauri()) {
+    void conn.setupListeners().catch((error) => {
+      conn.lastError = `事件监听初始化失败：${String(error)}`;
+    });
+    void conn.refreshPorts();
+    void rx.setup().catch((error) => {
+      rx.logError = `接收监听初始化失败：${String(error)}`;
+    });
+  }
   const MAX_LOG_QUEUE = 4096;
   const MAX_LOG_QUEUE_CHARS = 8 * 1024 * 1024;
   const LOG_BATCH_SIZE = 64;
   let logQueue: { path: string; line: string }[] = [];
+  let logQueueHead = 0;
   let queuedLogChars = 0;
   let inFlightLogChars = 0;
   let logWriting = false;
@@ -152,15 +296,15 @@ onMounted(() => {
     if (logWriting) return;
     logWriting = true;
     try {
-      while (logQueue.length && rx.saveLog) {
-        const first = logQueue[0];
+      while (logQueueHead < logQueue.length && rx.saveLog) {
+        const first = logQueue[logQueueHead];
         const batch: string[] = [];
         while (
           batch.length < LOG_BATCH_SIZE &&
-          logQueue.length > 0 &&
-          logQueue[0].path === first.path
+          logQueueHead < logQueue.length &&
+          logQueue[logQueueHead].path === first.path
         ) {
-          const item = logQueue.shift()!;
+          const item = logQueue[logQueueHead++];
           queuedLogChars -= item.line.length;
           batch.push(item.line);
         }
@@ -171,21 +315,28 @@ onMounted(() => {
         } finally {
           inFlightLogChars -= batchText.length;
         }
+        if (logQueueHead > 1024 && logQueueHead * 2 > logQueue.length) {
+          logQueue = logQueue.slice(logQueueHead);
+          logQueueHead = 0;
+        }
       }
       if (!rx.saveLog) {
         logQueue = [];
+        logQueueHead = 0;
         queuedLogChars = 0;
         inFlightLogChars = 0;
+        await api.flushLogFiles();
       }
     } catch (error) {
       logQueue = [];
+      logQueueHead = 0;
       queuedLogChars = 0;
       inFlightLogChars = 0;
       rx.logError = error instanceof Error ? error.message : String(error);
       rx.saveLog = false;
     } finally {
       logWriting = false;
-      if (logQueue.length && rx.saveLog) void flushLogQueue();
+      if (logQueueHead < logQueue.length && rx.saveLog) void flushLogQueue();
     }
   }
 
@@ -201,10 +352,10 @@ onMounted(() => {
       return;
     }
     while (
-      logQueue.length >= MAX_LOG_QUEUE ||
+      logQueue.length - logQueueHead >= MAX_LOG_QUEUE ||
       queuedLogChars + inFlightLogChars + line.length > MAX_LOG_QUEUE_CHARS
     ) {
-      const dropped = logQueue.shift();
+      const dropped = logQueue[logQueueHead++];
       if (!dropped) break;
       queuedLogChars -= dropped.line.length;
       rx.logError = "日志写入速度不足，已丢弃部分旧日志";
@@ -214,14 +365,37 @@ onMounted(() => {
     void flushLogQueue();
   });
   window.addEventListener("keydown", onGlobalKeydown);
-  // 曲线数据：从 rx 原始字节流解析（波形自己按曲线协议解析）
-  listen<{ data: number[] }>("rx-data", (e) => {
-    graph.processData(new Uint8Array(e.payload.data));
-  });
-  window.addEventListener("beforeunload", () => {
-    tx.stopAll();
-    rx.stopRateTimer();
-  });
+  window.addEventListener("pointermove", onSplitterMove);
+  window.addEventListener("pointerup", endResize);
+  window.addEventListener("beforeunload", onBeforeUnload);
+});
+
+function onBeforeUnload() {
+  tx.stopAll();
+  rx.stopRateTimer();
+  void api.flushLogFiles().catch(() => {});
+}
+
+function renameProfile(name: string) {
+  const next = prompt("新的收藏名称", name);
+  if (next === null || next.trim() === name) return;
+  if (!conn.renameProfile(name, next)) alert("重命名失败：名称为空或已经存在");
+}
+
+function removeProfile(name: string) {
+  if (confirm(`确定删除连接收藏「${name}」？`)) conn.removeProfile(name);
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onGlobalKeydown);
+  window.removeEventListener("pointermove", onSplitterMove);
+  window.removeEventListener("pointerup", endResize);
+  window.removeEventListener("beforeunload", onBeforeUnload);
+  sysMedia?.removeEventListener("change", onSystemThemeChange);
+  graph.setViewActive(false);
+  conn.teardownListeners();
+  rx.teardown();
+  onBeforeUnload();
 });
 </script>
 
@@ -229,10 +403,12 @@ onMounted(() => {
   <div class="app-root">
     <ConnectionBar />
     <ProtocolPanel />
-    <nav class="view-tabs">
+    <nav class="view-tabs" role="tablist" aria-label="工作区视图">
       <button
         class="view-tab"
         :class="{ active: view === 'debug' }"
+        role="tab"
+        :aria-selected="view === 'debug'"
         @click="view = 'debug'"
       >
         收发
@@ -240,6 +416,10 @@ onMounted(() => {
       <button
         class="view-tab"
         :class="{ active: view === 'graph' }"
+        role="tab"
+        :aria-selected="view === 'graph'"
+        @pointerenter="loadGraphPanel"
+        @focus="loadGraphPanel"
         @click="view = 'graph'"
       >
         波形
@@ -248,15 +428,33 @@ onMounted(() => {
       <span class="kbd-hint" title="全局快捷键：空格=开关连接 · H=HEX · T=时间戳 · P=暂停 · Esc=清空 · F5=刷新串口">
         空格 连接 · H HEX · P 暂停 · Esc 清空
       </span>
-      <button class="theme-btn" @click="showSettings = !showSettings" title="设置">
+      <button class="theme-btn" @click="openSettings" title="设置">
         设置
       </button>
     </nav>
     <main class="content">
-      <div v-if="view === 'debug'" class="workbench">
+      <div
+        v-if="view === 'debug'"
+        ref="workbenchEl"
+        class="workbench debug-workbench"
+        :style="{
+          gridTemplateColumns: `${splitRatio * 100}fr 6px ${(1 - splitRatio) * 100}fr`,
+        }"
+      >
         <div class="panel left">
           <ReceivePanel />
         </div>
+        <button
+          class="splitter"
+          role="separator"
+          aria-label="调整收发区域宽度"
+          aria-orientation="vertical"
+          :aria-valuenow="Math.round(splitRatio * 100)"
+          :aria-valuemin="55"
+          :aria-valuemax="78"
+          @pointerdown="beginResize"
+          @keydown="onSplitterKeydown"
+        ></button>
         <div class="panel right">
           <SendPanel />
         </div>
@@ -269,29 +467,44 @@ onMounted(() => {
     </main>
 
     <!-- 设置面板 -->
-    <div v-if="showSettings" class="settings-overlay" @click.self="showSettings = false">
-      <div class="settings-panel">
+    <div
+      v-if="showSettings"
+      class="settings-overlay"
+      @click.self="closeSettings"
+      @keydown="onSettingsKeydown"
+    >
+      <div
+        ref="settingsPanel"
+        class="settings-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        tabindex="-1"
+      >
         <div class="settings-head">
-          <span class="settings-title">设置</span>
-          <button class="mini-btn" @click="showSettings = false">✕ 关闭</button>
+          <span id="settings-title" class="settings-title">设置</span>
+          <button class="mini-btn" @click="closeSettings">✕ 关闭</button>
         </div>
         <div class="setting-row">
           <span class="setting-label">主题</span>
           <div class="seg">
             <button
               :class="{ active: theme === 'light' }"
+              :aria-pressed="theme === 'light'"
               @click="theme = 'light'"
             >
               浅色
             </button>
             <button
               :class="{ active: theme === 'dark' }"
+              :aria-pressed="theme === 'dark'"
               @click="theme = 'dark'"
             >
               深色
             </button>
             <button
               :class="{ active: theme === 'system' }"
+              :aria-pressed="theme === 'system'"
               @click="theme = 'system'"
             >
               跟随系统
@@ -316,14 +529,18 @@ onMounted(() => {
             <input type="checkbox" v-model="rx.saveLog" :disabled="!rx.logPath.trim()" />
             写入文件
           </label>
-          <input
-            v-model="rx.logPath"
-            class="log-path-input"
-            placeholder="日志文件绝对路径，例如 /tmp/serialaid.log"
-            title="输入日志文件绝对路径"
-          />
+          <div class="log-path-row">
+            <input
+              :value="rx.logPath"
+              class="log-path-input"
+              readonly
+              placeholder="尚未选择日志文件"
+              title="日志文件必须通过系统保存对话框选择"
+            />
+            <button class="mini-btn" @click="chooseLogPath">选择文件…</button>
+          </div>
           <span v-if="rx.logError" class="log-error">{{ rx.logError }}</span>
-          <span class="settings-hint">每条收发数据实时追加；路径由你明确指定</span>
+          <span class="settings-hint">记录实际线上原始 HEX；每次启动需重新选择文件并明确开启</span>
         </div>
         <div class="setting-row">
           <span class="setting-label">数据</span>
@@ -340,7 +557,8 @@ onMounted(() => {
               <span class="profile-detail">
                 {{ p.connType === "serial" ? `串口 ${p.serial.port} @ ${p.serial.baudrate}` : `${p.tcpudp.protocol.toUpperCase()} ${p.tcpudp.mode} ${p.tcpudp.mode === "client" ? p.tcpudp.target : ":" + p.tcpudp.port}` }}
               </span>
-              <button class="mini-btn danger" @click="conn.removeProfile(p.name)">删除</button>
+              <button class="mini-btn danger" @click="removeProfile(p.name)">删除</button>
+              <button class="mini-btn" @click="renameProfile(p.name)">重命名</button>
             </div>
           </div>
         </div>
@@ -361,21 +579,25 @@ onMounted(() => {
   --panel-border: #e2e4e8;
   --text-primary: #1f2328;
   --text-secondary: #5c6370;
-  --text-tertiary: #9aa0a8;
+  --text-tertiary: #6b7280;
   --control-bg: #ffffff;
   --control-border: #d4d6da;
   --control-text: #1f2328;
-  --accent: #0a84ff;
-  --accent-hover: #006fd6;
-  --accent-soft: rgba(10, 132, 255, 0.12);
-  --danger: #e5484d;
-  --danger-hover: #cc3d42;
+  --accent: #0969da;
+  --accent-hover: #0757b5;
+  --accent-soft: rgba(9, 105, 218, 0.12);
+  --danger: #cf222e;
+  --danger-hover: #a40e26;
+  --success: #1a7f37;
   --row-tx-bg: #f0f6ff;
   --row-border: #f0f1f3;
   --seg-bg: #e9ebee;
   --seg-active-bg: #ffffff;
   --bar-bg: #ffffff;
   --edit-bg: #f7f8fa;
+  --chart-grid: #e2e4e8;
+  --warning: #9a5b00;
+  --warning-soft: #fff4dd;
 
   /* 控件 */
   --field-bg: #ffffff;
@@ -387,10 +609,11 @@ onMounted(() => {
   --btn-border: #d4d6da;
   --btn-hover: #e9ebee;
   --btn-active: #dcdfe4;
-  --btn-primary-bg: #0a84ff;
-  --btn-primary-hover: #006fd6;
-  --btn-danger-bg: #e5484d;
-  --btn-danger-hover: #cc3d42;
+  --btn-primary-bg: #0969da;
+  --btn-primary-hover: #0757b5;
+  --btn-danger-bg: #cf222e;
+  --btn-danger-hover: #a40e26;
+  --btn-warning-bg: #9a6700;
   --radius-md: 6px;
   --radius-sm: 4px;
 
@@ -409,21 +632,25 @@ onMounted(() => {
   --panel-border: #3c3c3c;
   --text-primary: #e0e0e0;
   --text-secondary: #a0a0a0;
-  --text-tertiary: #6e6e6e;
+  --text-tertiary: #929292;
   --control-bg: #333333;
   --control-border: #4a4a4a;
   --control-text: #e0e0e0;
-  --accent: #3794ff;
-  --accent-hover: #4ba0ff;
-  --accent-soft: rgba(55, 148, 255, 0.18);
-  --danger: #f14c4c;
-  --danger-hover: #d64141;
+  --accent: #58a6ff;
+  --accent-hover: #79c0ff;
+  --accent-soft: rgba(88, 166, 255, 0.18);
+  --danger: #ff7b72;
+  --danger-hover: #ffa198;
+  --success: #56d364;
   --row-tx-bg: #1d2b3d;
   --row-border: #2d2d2d;
   --seg-bg: #2d2d2d;
   --seg-active-bg: #3c3c3c;
   --bar-bg: #252526;
   --edit-bg: #2a2a2b;
+  --chart-grid: #444444;
+  --warning: #ffb340;
+  --warning-soft: #3a2b16;
 
   --field-bg: #333333;
   --field-border: #4a4a4a;
@@ -434,10 +661,11 @@ onMounted(() => {
   --btn-border: #4a4a4a;
   --btn-hover: #454545;
   --btn-active: #505050;
-  --btn-primary-bg: #3794ff;
-  --btn-primary-hover: #4ba0ff;
-  --btn-danger-bg: #f14c4c;
-  --btn-danger-hover: #d64141;
+  --btn-primary-bg: #1f6feb;
+  --btn-primary-hover: #388bfd;
+  --btn-danger-bg: #da3633;
+  --btn-danger-hover: #b62324;
+  --btn-warning-bg: #9a6700;
 }
 
 * {
@@ -458,6 +686,11 @@ select,
 textarea,
 button {
   font-family: inherit;
+}
+button,
+select,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]) {
+  min-height: 28px;
 }
 
 /* ===== 控件基础 ===== */
@@ -492,9 +725,15 @@ textarea:focus {
 }
 select:focus-visible,
 input:focus-visible,
-textarea:focus-visible,
-button:focus-visible {
+textarea:focus-visible {
   outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--field-focus-ring);
+}
+button:focus-visible,
+[role="separator"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* select 自定义箭头 */
@@ -627,8 +866,8 @@ select optgroup {
   background: var(--btn-active);
 }
 .tool-btn.active, .opt.active {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
   color: #fff;
 }
 .tool-btn.danger:hover, .mini.danger:hover, .action-btn.danger:hover {
@@ -849,6 +1088,10 @@ select optgroup {
   display: flex;
   gap: 12px;
 }
+.debug-workbench {
+  display: grid;
+  gap: 0;
+}
 .panel {
   background: var(--panel-bg);
   border-radius: var(--radius-md);
@@ -862,10 +1105,32 @@ select optgroup {
 }
 .panel.right {
   flex: 4;
-  min-width: 240px;
+  min-width: 0;
 }
 .panel.full {
   flex: 1;
+}
+.splitter {
+  width: 6px;
+  min-width: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+}
+.splitter::after {
+  content: "";
+  position: absolute;
+  inset: 8px 2px;
+  border-radius: 2px;
+  background: var(--panel-border);
+  transition: background 0.12s ease;
+}
+.splitter:hover::after,
+.splitter:focus-visible::after {
+  background: var(--accent);
 }
 
 /* ===== 设置面板 ===== */
@@ -889,6 +1154,9 @@ select optgroup {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  outline: none;
 }
 .settings-head {
   display: flex;
@@ -936,7 +1204,7 @@ select optgroup {
 }
 .range-slider {
   flex: 1;
-  accent-color: #0a84ff;
+  accent-color: var(--accent);
 }
 .setting-val {
   width: 44px;
@@ -960,8 +1228,14 @@ select optgroup {
   font-size: 12.5px;
   color: var(--text-secondary);
 }
+.log-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .log-path-input {
-  width: 100%;
+  min-width: 0;
+  flex: 1;
   box-sizing: border-box;
   border: 1px solid var(--control-border);
   border-radius: 6px;
@@ -969,6 +1243,10 @@ select optgroup {
   background: var(--control-bg);
   color: var(--text-primary);
   font-size: 12px;
+}
+.log-path-input[readonly] {
+  color: var(--text-secondary);
+  cursor: default;
 }
 .log-error {
   color: var(--danger);
@@ -1012,5 +1290,25 @@ select optgroup {
   padding-top: 10px;
   font-size: 11px;
   color: var(--text-tertiary);
+}
+
+@media (max-width: 1080px) {
+  .kbd-hint {
+    display: none;
+  }
+  .content {
+    padding: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 </style>

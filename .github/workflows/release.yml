@@ -17,6 +17,8 @@ jobs:
       tag_name: ${{ steps.meta.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 读取版本与 Tag
         id: meta
@@ -24,10 +26,18 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
+          CARGO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)
+          TAURI_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          test "${VERSION}" = "${CARGO_VERSION}"
+          test "${VERSION}" = "${TAURI_VERSION}"
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME}"
           else
             TAG="v${VERSION}"
+          fi
+          if [ "${TAG}" != "v${VERSION}" ]; then
+            echo "Tag ${TAG} 与应用版本 ${VERSION} 不一致" >&2
+            exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag_name=${TAG}" >> "$GITHUB_OUTPUT"
@@ -47,6 +57,12 @@ jobs:
               -f "sha=${GITHUB_SHA}" >/dev/null
             echo "已创建 Tag: ${TAG_NAME}"
           else
+            TAG_SHA=$(git rev-list -n 1 "${TAG_NAME}")
+            CURRENT_SHA=$(git rev-parse "${GITHUB_SHA}^{commit}")
+            if [ "${TAG_SHA}" != "${CURRENT_SHA}" ]; then
+              echo "Tag ${TAG_NAME} 指向 ${TAG_SHA}，当前提交为 ${CURRENT_SHA}，拒绝混用源码与安装包" >&2
+              exit 1
+            fi
             echo "Tag 已存在: ${TAG_NAME}"
           fi
 
@@ -123,6 +139,13 @@ jobs:
 
       - name: 安装前端依赖
         run: npm ci
+
+      - name: 运行前端回归测试
+        run: npm test
+
+      - name: 运行 Rust 测试
+        working-directory: src-tauri
+        run: cargo test --all-targets --all-features -- --test-threads=1
 
       - name: 编译并上传安装包
         uses: tauri-apps/tauri-action@v0
