@@ -115,7 +115,9 @@ jobs:
             args: '--target x86_64-apple-darwin'
           - platform: 'ubuntu-22.04'
             args: ''
-          - platform: 'windows-latest'
+          # 固定 VS 2022 运行环境；windows-latest 已切换到 Server 2025/VS 2026，
+          # 会让 Tauri 集成测试进程在启动时出现 STATUS_ENTRYPOINT_NOT_FOUND。
+          - platform: 'windows-2022'
             args: ''
     runs-on: ${{ matrix.platform }}
     steps:
