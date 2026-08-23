@@ -1,15 +1,18 @@
 // 曲线帧解析验证
 const esbuild = require("esbuild");
+const os = require("node:os");
+const path = require("node:path");
 
 async function main() {
+  const bundlePath = path.join(os.tmpdir(), "serial-aid-curve-bundle.cjs");
   await esbuild.build({
     entryPoints: ["src/utils/curve.ts"],
     bundle: true,
-    outfile: "/tmp/curve_bundle.cjs",
+    outfile: bundlePath,
     format: "cjs",
     platform: "node",
   });
-  const { parseAsciiFrame, parseBinaryFrames, DEFAULT_HEADER } = require("/tmp/curve_bundle.cjs");
+  const { parseAsciiFrame, parseBinaryFrames, DEFAULT_HEADER } = require(bundlePath);
 
   let pass = 0;
   let fail = 0;

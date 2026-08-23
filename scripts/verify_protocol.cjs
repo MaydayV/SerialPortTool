@@ -1,15 +1,18 @@
 // 协议引擎验证：组帧→解帧环回，覆盖校验范围/位置、长度偏移、粘包半包
 const esbuild = require("esbuild");
+const os = require("node:os");
+const path = require("node:path");
 
 async function main() {
+  const bundlePath = path.join(os.tmpdir(), "serial-aid-protocol-bundle.cjs");
   await esbuild.build({
     entryPoints: ["src/utils/protocol.ts"],
     bundle: true,
-    outfile: "/tmp/proto_bundle.cjs",
+    outfile: bundlePath,
     format: "cjs",
     platform: "node",
   });
-  const { extractFrames, packFrame, DEFAULT_TEMPLATES } = require("/tmp/proto_bundle.cjs");
+  const { extractFrames, packFrame, DEFAULT_TEMPLATES } = require(bundlePath);
 
   let pass = 0;
   let fail = 0;
