@@ -31,6 +31,7 @@ async function main() {
     }
   };
   const sum = store.templates.find((t) => t.name === "SUM 校验帧");
+  const crcTemplate = store.templates.find((t) => t.name === "CRC16-MODBUS 帧");
   store.rxEnabled = true;
   store.select(sum.name);
   const frame = store.processTx(new Uint8Array([1, 2, 3]));
@@ -71,6 +72,34 @@ async function main() {
   const replaced = store.replaceTemplates([persistedTemplate, persistedTemplate, { ...persistedTemplate, name: "Broken", header: "GG" }]);
   check("persisted templates replace defaults and deduplicate", replaced && store.templates.length === 1 && store.templates[0].name === "Persisted only");
   check("duplicate template names are rejected", store.addTemplate({ ...persistedTemplate }) === false);
+
+  const largeTemplate = {
+    name: "Large chunk",
+    header: "AA",
+    tail: "55",
+    length: { enabled: false, offset: 0, bytes: 1, endian: "little", includeSelf: false },
+    checksum: "none",
+    checksumRange: "all",
+    checksumPosition: "tail",
+    description: "",
+  };
+  store.replaceTemplates([largeTemplate]);
+  store.select("Large chunk");
+  const largeData = new Uint8Array(128 * 1024);
+  largeData[0] = 0xaa;
+  largeData[largeData.length - 1] = 0x55;
+  const largeResult = store.processRx(largeData);
+  check("large RX chunks preserve complete frames", largeResult.frames.length === 1 && largeResult.frames[0].length === largeData.length);
+
+  store.replaceTemplates([crcTemplate]);
+  store.select("CRC16-MODBUS 帧");
+  store.txEnabled = true;
+  store.rxEnabled = true;
+  const crcPayload = new Uint8Array(128 * 1024);
+  crcPayload.fill(0x5a);
+  const crcFrame = store.processTx(crcPayload);
+  const crcResult = store.processRx(crcFrame);
+  check("unbounded CRC frames stay whole", crcResult.frames.length === 1 && crcResult.frames[0].length === crcFrame.length);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);

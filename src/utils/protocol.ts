@@ -25,7 +25,7 @@ export interface FrameTemplate {
   description: string;
 }
 
-const MAX_FRAME_LENGTH = 16 * 1024 * 1024;
+export const MAX_FRAME_LENGTH = 16 * 1024 * 1024;
 const VALID_LENGTH_BYTES = [1, 2, 4];
 const DEFAULT_LENGTH: LengthField = {
   enabled: false,
@@ -268,7 +268,7 @@ export function extractFrames(
         frameLen > MAX_FRAME_LENGTH
       ) {
         errors++;
-        buf = buf.slice(1);
+        buf = resyncAfterFailure(buf, header);
         continue;
       }
     } else if (tail.length > 0) {
@@ -283,7 +283,7 @@ export function extractFrames(
 
     if (frameLen <= 0 || frameLen > MAX_FRAME_LENGTH) {
       errors++;
-      buf = buf.slice(1);
+      buf = resyncAfterFailure(buf, header);
       continue;
     }
     if (buf.length < frameLen) break;
@@ -291,7 +291,7 @@ export function extractFrames(
     const frame = buf.slice(0, frameLen);
     if (!hasExpectedTail(frame, tail, csLen, t)) {
       errors++;
-      buf = buf.slice(1);
+      buf = resyncAfterFailure(buf, header);
       continue;
     }
 
@@ -300,14 +300,15 @@ export function extractFrames(
       const range = checksumInputForFrame(t, frame, tail.length, csStart);
       if (!range) {
         errors++;
-        buf = buf.slice(1);
+        buf = resyncAfterFailure(buf, header);
         continue;
       }
       const expected = checksumToBytes(t.checksum, computeChecksum(t.checksum, range));
       const actual = frame.slice(csStart, csStart + csLen);
       if (!bytesEqual(actual, expected)) {
         errors++;
-        buf = buf.slice(1);
+        // 没有可推断边界时整包失败即结束；有帧头时跳到下一个候选帧头。
+        buf = resyncAfterFailure(buf, header);
         continue;
       }
     }
@@ -317,6 +318,14 @@ export function extractFrames(
   }
 
   return { frames, rest: buf, errors, trash };
+}
+
+function resyncAfterFailure(buffer: Uint8Array, header: Uint8Array): Uint8Array {
+  if (buffer.length === 0 || header.length === 0) return new Uint8Array(0);
+  const next = findSubarray(buffer.slice(1), header);
+  if (next >= 0) return buffer.slice(next + 1);
+  const keep = Math.min(header.length - 1, buffer.length);
+  return keep > 0 ? buffer.slice(-keep) : new Uint8Array(0);
 }
 
 /** 组帧：把负载数据按模板封装成完整帧。非法模板时返回原始负载副本，避免发出损坏帧。 */

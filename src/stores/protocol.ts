@@ -4,10 +4,13 @@ import { ref, computed } from "vue";
 import {
   DEFAULT_TEMPLATES,
   extractFrames,
+  MAX_FRAME_LENGTH,
   normalizeFrameTemplate,
   packFrame,
   type FrameTemplate,
 } from "../utils/protocol";
+
+const RX_CHUNK_SIZE = 64 * 1024;
 
 export const useProtocolStore = defineStore("protocol", () => {
   const templates = ref<FrameTemplate[]>([...DEFAULT_TEMPLATES]);
@@ -89,11 +92,31 @@ export const useProtocolStore = defineStore("protocol", () => {
     if (!rxEnabled.value || active.value.checksum === "none" && !active.value.header && !active.value.tail && !active.value.length.enabled) {
       return { frames: [data], enabled: false };
     }
-    const combined = new Uint8Array(rxBuffer.value.length + data.length);
-    combined.set(rxBuffer.value);
-    combined.set(data, rxBuffer.value.length);
-    const { frames, rest, errors, trash } = extractFrames(combined, active.value);
-    rxBuffer.value = rest;
+    const frames: Uint8Array[] = [];
+    let errors = 0;
+    let trash = 0;
+    const canInferFrameBoundary = active.value.length.enabled || active.value.tail.length > 0;
+    const chunkSize = canInferFrameBoundary ? RX_CHUNK_SIZE : data.length;
+    for (let offset = 0; offset < data.length; offset += chunkSize) {
+      const incoming = data.subarray(offset, Math.min(offset + chunkSize, data.length));
+      const keepPrevious = Math.max(0, MAX_FRAME_LENGTH - incoming.length);
+      const previous =
+        keepPrevious === 0
+          ? new Uint8Array(0)
+          : rxBuffer.value.length > keepPrevious
+          ? rxBuffer.value.slice(-keepPrevious)
+          : rxBuffer.value;
+      const dropped = rxBuffer.value.length - previous.length;
+      const combined = new Uint8Array(previous.length + incoming.length);
+      combined.set(previous);
+      combined.set(incoming, previous.length);
+      const result = extractFrames(combined, active.value);
+      const overflow = Math.max(0, result.rest.length - MAX_FRAME_LENGTH);
+      rxBuffer.value = overflow ? result.rest.slice(overflow) : result.rest;
+      frames.push(...result.frames);
+      errors += result.errors;
+      trash += result.trash + dropped + overflow;
+    }
     frameCount.value += frames.length;
     frameErrorCount.value += errors;
     frameTrashCount.value += trash;

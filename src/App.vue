@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from "vue";
+import { ref, onMounted, watch, defineAsyncComponent } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import ConnectionBar from "./components/ConnectionBar.vue";
 import ProtocolPanel from "./components/ProtocolPanel.vue";
 import ReceivePanel from "./components/ReceivePanel.vue";
 import SendPanel from "./components/SendPanel.vue";
-import GraphPanel from "./components/GraphPanel.vue";
+const GraphPanel = defineAsyncComponent(() => import("./components/GraphPanel.vue"));
 import { useConnStore } from "./stores/conn";
 import { useRxStore } from "./stores/rx";
 import { useTxStore } from "./stores/tx";
@@ -140,18 +140,78 @@ onMounted(() => {
   conn.setupListeners();
   conn.refreshPorts();
   rx.setup();
-  let logQueue = Promise.resolve();
+  const MAX_LOG_QUEUE = 4096;
+  const MAX_LOG_QUEUE_CHARS = 8 * 1024 * 1024;
+  const LOG_BATCH_SIZE = 64;
+  let logQueue: { path: string; line: string }[] = [];
+  let queuedLogChars = 0;
+  let inFlightLogChars = 0;
+  let logWriting = false;
+
+  async function flushLogQueue() {
+    if (logWriting) return;
+    logWriting = true;
+    try {
+      while (logQueue.length && rx.saveLog) {
+        const first = logQueue[0];
+        const batch: string[] = [];
+        while (
+          batch.length < LOG_BATCH_SIZE &&
+          logQueue.length > 0 &&
+          logQueue[0].path === first.path
+        ) {
+          const item = logQueue.shift()!;
+          queuedLogChars -= item.line.length;
+          batch.push(item.line);
+        }
+        const batchText = batch.join("");
+        inFlightLogChars += batchText.length;
+        try {
+          await api.appendLogFile(first.path, batchText);
+        } finally {
+          inFlightLogChars -= batchText.length;
+        }
+      }
+      if (!rx.saveLog) {
+        logQueue = [];
+        queuedLogChars = 0;
+        inFlightLogChars = 0;
+      }
+    } catch (error) {
+      logQueue = [];
+      queuedLogChars = 0;
+      inFlightLogChars = 0;
+      rx.logError = error instanceof Error ? error.message : String(error);
+      rx.saveLog = false;
+    } finally {
+      logWriting = false;
+      if (logQueue.length && rx.saveLog) void flushLogQueue();
+    }
+  }
+
   rx.setLogWriter((line) => {
     const path = rx.logPath.trim();
     if (!rx.saveLog || !path) return;
-    logQueue = logQueue.then(async () => {
-      try {
-        await api.appendLogFile(path, line);
-      } catch (error) {
-        rx.logError = error instanceof Error ? error.message : String(error);
-        rx.saveLog = false;
-      }
-    });
+    if (line.length > MAX_LOG_QUEUE_CHARS) {
+      rx.logError = "单条日志超过大小上限，已丢弃";
+      return;
+    }
+    if (inFlightLogChars + line.length > MAX_LOG_QUEUE_CHARS) {
+      rx.logError = "日志写入速度不足，已丢弃新日志";
+      return;
+    }
+    while (
+      logQueue.length >= MAX_LOG_QUEUE ||
+      queuedLogChars + inFlightLogChars + line.length > MAX_LOG_QUEUE_CHARS
+    ) {
+      const dropped = logQueue.shift();
+      if (!dropped) break;
+      queuedLogChars -= dropped.line.length;
+      rx.logError = "日志写入速度不足，已丢弃部分旧日志";
+    }
+    logQueue.push({ path, line });
+    queuedLogChars += line.length;
+    void flushLogQueue();
   });
   window.addEventListener("keydown", onGlobalKeydown);
   // 曲线数据：从 rx 原始字节流解析（波形自己按曲线协议解析）

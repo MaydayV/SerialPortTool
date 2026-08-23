@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -56,7 +56,8 @@ pub struct TcpUdpConn {
     pub last_sender: Arc<Mutex<Option<SocketAddr>>>,
     // TCP server: 监听器 + 客户端列表（列表只保存写端）
     pub listener: Arc<Mutex<Option<TcpListener>>>,
-    pub clients: Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
+    pub clients: Arc<Mutex<HashMap<SocketAddr, (u64, TcpStream)>>>,
+    pub client_seq: Arc<AtomicU64>,
     // accept 线程和客户端接收线程
     pub threads: Vec<JoinHandle<()>>,
     pub worker_threads: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -78,6 +79,7 @@ impl TcpUdpConn {
             last_sender: Arc::new(Mutex::new(None)),
             listener: Arc::new(Mutex::new(None)),
             clients: Arc::new(Mutex::new(HashMap::new())),
+            client_seq: Arc::new(AtomicU64::new(0)),
             threads: Vec::new(),
             worker_threads: Arc::new(Mutex::new(Vec::new())),
         }
@@ -193,12 +195,14 @@ impl TcpUdpConn {
         let stop = self.stop.clone();
         let connected = self.connected.clone();
         let workers = self.worker_threads.clone();
+        let client_seq = self.client_seq.clone();
         let app2 = app.clone();
         self.threads.push(std::thread::spawn(move || {
             loop {
                 if stop.load(Ordering::SeqCst) {
                     break;
                 }
+                reap_finished_workers(&workers);
                 let accepted = {
                     let guard = listener.lock().unwrap();
                     match guard.as_ref() {
@@ -244,9 +248,10 @@ impl TcpUdpConn {
                         continue;
                     }
                 };
+                let client_id = client_seq.fetch_add(1, Ordering::SeqCst);
                 let client_count = {
                     let mut guard = clients.lock().unwrap();
-                    guard.insert(addr, stream);
+                    guard.insert(addr, (client_id, stream));
                     guard.len()
                 };
                 emit_status(
@@ -280,7 +285,9 @@ impl TcpUdpConn {
                     }
                     let remain = {
                         let mut guard = clients2.lock().unwrap();
-                        guard.remove(&addr);
+                        if guard.get(&addr).map(|(id, _)| *id) == Some(client_id) {
+                            guard.remove(&addr);
+                        }
                         guard.len()
                     };
                     if closed && !stop2.load(Ordering::SeqCst) {
@@ -503,7 +510,7 @@ impl TcpUdpConn {
         let mut clients = self.clients.lock().unwrap();
         let mut sent = 0usize;
         let mut dead = Vec::new();
-        for (addr, stream) in clients.iter_mut() {
+        for (addr, (_, stream)) in clients.iter_mut() {
             if stream.write_all(data).is_ok() {
                 sent += data.len();
             } else {
@@ -610,6 +617,24 @@ fn reconnect_tcp<R: Runtime>(
             },
             Err(error) => emit_status(app, "connecting", format!("重连失败: {}", error)),
         }
+    }
+}
+
+fn reap_finished_workers(workers: &Arc<Mutex<Vec<JoinHandle<()>>>>) {
+    let mut finished = Vec::new();
+    {
+        let mut guard = workers.lock().unwrap();
+        let mut index = 0;
+        while index < guard.len() {
+            if guard[index].is_finished() {
+                finished.push(guard.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
+    }
+    for worker in finished {
+        let _ = worker.join();
     }
 }
 

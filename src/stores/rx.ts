@@ -26,6 +26,7 @@ export interface RxEntry {
 
 // 显示上限：虚拟滚动 + 截断（防内存膨胀）
 const MAX_ENTRIES = 20000;
+const PRUNE_BATCH = 512;
 
 export const useRxStore = defineStore("rx", () => {
   const entries = ref<RxEntry[]>([]);
@@ -113,7 +114,8 @@ export const useRxStore = defineStore("rx", () => {
     // 暂停=缓冲模式：数据继续接收，仅停止自动滚动（由面板控制）
     const entry = makeEntry(data, dir, ts);
     entries.value.push(entry);
-    if (entries.value.length > MAX_ENTRIES) {
+    if (entries.value.length > MAX_ENTRIES + PRUNE_BATCH) {
+      // 批量淘汰，避免高频接收时每条数据都触发 O(n) 头部移动。
       entries.value.splice(0, entries.value.length - MAX_ENTRIES);
     }
     if (dir === "rx") {

@@ -1,8 +1,18 @@
 <script setup lang="ts">
+import * as echarts from "echarts/core";
+import { LineChart } from "echarts/charts";
+import {
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+} from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
-import * as echarts from "echarts";
 import { useGraphStore } from "../stores/graph";
 import { hexToBytes } from "../utils/bytes";
+
+echarts.use([LineChart, DataZoomComponent, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const store = useGraphStore();
 const chartEl = ref<HTMLDivElement | null>(null);
@@ -82,9 +92,13 @@ function scheduleRender() {
     chart.setOption({ series }, { notMerge: true });
     // 自动滚动 x 轴
     if (store.autoScroll && series.length) {
-      const allX = store.seriesList.flatMap((s) => s.xs);
-      if (allX.length) {
-        const maxX = Math.max(...allX);
+      let maxX = Number.NEGATIVE_INFINITY;
+      for (const series of store.seriesList) {
+        for (const x of series.xs) {
+          if (x > maxX) maxX = x;
+        }
+      }
+      if (maxX !== Number.NEGATIVE_INFINITY) {
         chart.setOption({
           xAxis: { min: maxX - store.xRange, max: maxX },
         });
