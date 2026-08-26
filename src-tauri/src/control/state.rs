@@ -198,6 +198,10 @@ impl RxRingBuffer {
             .len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn stored_bytes(&self) -> usize {
         self.inner.lock().unwrap_or_else(|p| p.into_inner()).bytes
     }

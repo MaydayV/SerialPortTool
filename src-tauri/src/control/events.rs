@@ -6,18 +6,13 @@ use std::sync::Mutex;
 
 const EVENT_HISTORY_CAPACITY: usize = 1024;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionOrigin {
+    #[default]
     Ui,
     Mcp,
     System,
-}
-
-impl Default for ActionOrigin {
-    fn default() -> Self {
-        Self::Ui
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

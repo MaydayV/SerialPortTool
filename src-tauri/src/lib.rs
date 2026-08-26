@@ -387,6 +387,11 @@ pub fn run() {
         .setup(|app| {
             // 端口热插拔监听
             conn::spawn_port_watcher(app.handle().clone());
+            let mcp_handle = mcp::McpServer::new()
+                .map_err(|error| std::io::Error::other(error.to_string()))?
+                .start()
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
+            app.manage(mcp_handle);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -395,8 +400,13 @@ pub fn run() {
                 let _ = manager.flush_and_close_all();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<mcp::McpServerHandle>().shutdown();
+            }
+        });
 }
 
 #[cfg(test)]

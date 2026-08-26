@@ -15,18 +15,13 @@ pub const MAX_WAIT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_TARGET_LENGTH: usize = 4 * 1024;
 pub const MAX_BAUD_RATE: u32 = 10_000_000;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
     Observe,
+    #[default]
     Ask,
     Full,
-}
-
-impl Default for PermissionMode {
-    fn default() -> Self {
-        Self::Ask
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -351,7 +346,7 @@ pub struct EmptyRequest {}
 
 fn decode_hex(input: &str) -> Result<Vec<u8>, ToolError> {
     let compact: String = input.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-    if compact.len() % 2 != 0 {
+    if !compact.len().is_multiple_of(2) {
         return Err(ToolError::invalid_params(
             "hex data must contain complete byte pairs",
         ));
@@ -424,7 +419,7 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, ToolError> {
     if compact.is_empty() {
         return Ok(Vec::new());
     }
-    if compact.len() % 4 != 0 {
+    if !compact.len().is_multiple_of(4) {
         return Err(ToolError::invalid_params(
             "base64 data length must be a multiple of 4",
         ));
