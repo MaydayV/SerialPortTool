@@ -52,6 +52,7 @@ export const api = {
   connOpen: (cfg: ConnConfig) => invoke<void>("conn_open", { cfg }),
   connClose: () => invoke<void>("conn_close"),
   connSend: (data: number[]) => invoke<number>("conn_send", { data }),
+  connClearReceived: () => invoke<void>("conn_clear_received"),
   selectOutputFile: (kind: "log" | "templates" | "curve") =>
     invoke<string | null>("select_output_file", { kind }),
   writeUserFile: (path: string, text: string, truncate: boolean) =>

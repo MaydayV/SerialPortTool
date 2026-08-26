@@ -1,6 +1,7 @@
 //! MCP JSON-RPC method dispatch and the modern server capability surface.
 
 use super::schema::{tool_definitions, ToolError, ToolErrorCode, ToolResult};
+use super::tools::ToolControlContext;
 use serde_json::{json, Value};
 
 pub const MCP_PROTOCOL_VERSION: &str = "2026-07-28";
@@ -16,6 +17,14 @@ pub enum DispatchResult {
 }
 
 pub fn dispatch(method: &str, params: Option<&Value>) -> Result<Value, RpcDispatchError> {
+    dispatch_with_context(method, params, None)
+}
+
+pub fn dispatch_with_context(
+    method: &str,
+    params: Option<&Value>,
+    control: Option<&dyn ToolControlContext>,
+) -> Result<Value, RpcDispatchError> {
     match method {
         "server/discover" => Ok(json!({
             "supportedVersions": SUPPORTED_PROTOCOL_VERSIONS,
@@ -28,7 +37,7 @@ pub fn dispatch(method: &str, params: Option<&Value>) -> Result<Value, RpcDispat
             }
         })),
         "tools/list" => tools_list(params),
-        "tools/call" => tools_call(params),
+        "tools/call" => tools_call(params, control),
         _ => Err(RpcDispatchError::method_not_found(method)),
     }
 }
@@ -64,7 +73,10 @@ fn tools_list(params: Option<&Value>) -> Result<Value, RpcDispatchError> {
     }))
 }
 
-fn tools_call(params: Option<&Value>) -> Result<Value, RpcDispatchError> {
+fn tools_call(
+    params: Option<&Value>,
+    control: Option<&dyn ToolControlContext>,
+) -> Result<Value, RpcDispatchError> {
     let params = params
         .and_then(Value::as_object)
         .ok_or_else(|| RpcDispatchError::invalid_params("tools/call params must be an object"))?;
@@ -77,15 +89,15 @@ fn tools_call(params: Option<&Value>) -> Result<Value, RpcDispatchError> {
             "unknown tool: {name}"
         )));
     }
-
-    // Task 3 intentionally exposes the stable contract but does not call the
-    // application control service. Task 4 will replace this result with the
-    // typed AppControlService operation while preserving ToolResult semantics.
-    let error = ToolError::new(
-        ToolErrorCode::TransportError,
-        "tool execution is not wired in Task 3",
-    );
-    serde_json::to_value(ToolResult::error(&error)).map_err(|error| {
+    let arguments = params.get("arguments");
+    let result = match control {
+        Some(control) => control.call(name, arguments),
+        None => ToolResult::error(&ToolError::new(
+            ToolErrorCode::TransportError,
+            "tool execution has no application control context",
+        )),
+    };
+    serde_json::to_value(result).map_err(|error| {
         RpcDispatchError::internal(format!("failed to serialize tool result: {error}"))
     })
 }

@@ -12,7 +12,7 @@ use state::{
     RxReadResult, RxRingBuffer, RxWaitError, DEFAULT_RX_MAX_BYTES, DEFAULT_RX_MAX_RECORDS,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 
@@ -34,12 +34,20 @@ pub struct ServiceState {
     pub rx_buffer_bytes: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClearReceivedSummary {
+    pub records: usize,
+    pub bytes: usize,
+}
+
+#[derive(Clone)]
 pub struct AppControlService {
     manager: Arc<ConnManager>,
     state: Arc<ControlState>,
     rx_buffer: Arc<RxRingBuffer>,
     action_events: Arc<ActionEventLog>,
-    action_counter: AtomicU64,
+    action_counter: Arc<AtomicU64>,
+    pending_config: Arc<Mutex<Option<ConnConfig>>>,
 }
 
 impl Default for AppControlService {
@@ -84,7 +92,8 @@ impl AppControlService {
             state,
             rx_buffer,
             action_events,
-            action_counter: AtomicU64::new(ACTION_ID_COUNTER_START),
+            action_counter: Arc::new(AtomicU64::new(ACTION_ID_COUNTER_START)),
+            pending_config: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -112,6 +121,10 @@ impl AppControlService {
         self.action_events.snapshot()
     }
 
+    pub fn latest_rx_cursor(&self) -> u64 {
+        self.rx_buffer.latest_cursor()
+    }
+
     pub fn list_state(&self) -> ConnectionSnapshot {
         self.snapshot()
     }
@@ -123,6 +136,10 @@ impl AppControlService {
         origin: ActionOrigin,
     ) -> Result<ActionResult<()>, String> {
         let summary = ConnectionConfigSummary::from(&cfg);
+        *self
+            .pending_config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cfg.clone());
         self.state.set_config(Some(summary));
         self.state.set_status(ConnectionStatus::Connecting);
         let manager = self.manager.clone();
@@ -140,6 +157,44 @@ impl AppControlService {
                 Err(error)
             }
         }
+    }
+
+    pub fn configure<R: Runtime>(
+        &self,
+        cfg: ConnConfig,
+        app: AppHandle<R>,
+        origin: ActionOrigin,
+    ) -> Result<ActionResult<ConnectionConfigSummary>, String> {
+        let summary = ConnectionConfigSummary::from(&cfg);
+        let pending_config = self.pending_config.clone();
+        let state = self.state.clone();
+        self.run_action(
+            &app,
+            origin,
+            "configure_connection",
+            "配置连接",
+            move || {
+                *pending_config
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cfg);
+                state.set_config(Some(summary.clone()));
+                Ok(summary)
+            },
+        )
+    }
+
+    pub fn connect<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        origin: ActionOrigin,
+    ) -> Result<ActionResult<()>, String> {
+        let cfg = self
+            .pending_config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| "未配置连接".to_string())?;
+        self.open(cfg, app, origin)
     }
 
     pub fn close<R: Runtime>(
@@ -169,6 +224,7 @@ impl AppControlService {
             ));
         }
         let manager = self.manager.clone();
+        let tx_data = data.clone();
         let result = self.run_action(&app, origin, "send", "发送数据", move || {
             let queue = manager.send_queue_lock();
             let _queue_guard = queue.lock().map_err(|_| "发送队列锁异常".to_string())?;
@@ -176,6 +232,16 @@ impl AppControlService {
         });
         if let Ok(action) = &result {
             self.state.record_tx(action.result);
+            let payload = crate::conn::RxPayload {
+                data: tx_data,
+                ts: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64()
+                    * 1000.0,
+                peer: None,
+            };
+            let _ = app.emit("tx-data", payload);
         }
         result
     }
@@ -217,20 +283,28 @@ impl AppControlService {
         &self,
         app: AppHandle<R>,
         origin: ActionOrigin,
-    ) -> Result<ActionResult<()>, String> {
+    ) -> Result<ActionResult<ClearReceivedSummary>, String> {
         let rx_buffer = self.rx_buffer.clone();
         let state = self.state.clone();
-        self.run_action(
+        let result = self.run_action(
             &app,
             origin,
             "clear_received",
             "清空接收缓冲",
             move || {
+                let summary = ClearReceivedSummary {
+                    records: rx_buffer.len(),
+                    bytes: rx_buffer.stored_bytes(),
+                };
                 rx_buffer.clear();
                 state.reset_stats();
-                Ok(())
+                Ok(summary)
             },
-        )
+        );
+        if let Ok(action) = &result {
+            let _ = app.emit("rx-cleared", action.action_id.clone());
+        }
+        result
     }
 
     fn next_action_id(&self) -> String {

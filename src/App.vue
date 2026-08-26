@@ -213,6 +213,14 @@ async function chooseLogPath() {
   }
 }
 
+function clearReceived() {
+  if (isTauri()) {
+    void api.connClearReceived().catch(() => rx.clear());
+  } else {
+    rx.clear();
+  }
+}
+
 // 全局快捷键（非输入框焦点时生效）
 function onGlobalKeydown(e: KeyboardEvent) {
   if (showSettings.value) {
@@ -243,7 +251,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
       case "escape":
         // 清空接收区
         e.preventDefault();
-        rx.clear();
+        clearReceived();
         break;
       case "h":
         // 切换 HEX 显示，并确保与 ASCII 互斥

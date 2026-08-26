@@ -3,7 +3,6 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { api } from "../api";
 import { useConnStore } from "./conn";
-import { useRxStore } from "./rx";
 import { useProtocolStore } from "./protocol";
 import { hexToBytes, escapeToBytes } from "../utils/bytes";
 
@@ -98,7 +97,6 @@ export const useTxStore = defineStore("tx", () => {
 
   async function doSend(bytes: Uint8Array): Promise<boolean> {
     const conn = useConnStore();
-    const rx = useRxStore();
     if (!conn.isConnected()) {
       notify("未连接，无法发送");
       return false;
@@ -117,9 +115,7 @@ export const useTxStore = defineStore("tx", () => {
         // 协议组帧在真正发送前执行；失败会明确抛错，不会静默透传。
         const proto = useProtocolStore();
         const out = proto.processTx(bytes);
-        const written = await api.connSend(Array.from(out));
-        // 回显、统计和日志必须与实际线上字节一致。
-        rx.append(out, "tx", Date.now(), undefined, true, written);
+        await api.connSend(Array.from(out));
         return true;
       });
     } catch (e) {
@@ -245,8 +241,7 @@ export const useTxStore = defineStore("tx", () => {
           const end = Math.min(file.size, offset + CHUNK_SIZE);
           const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
           // 文件定义为原始字节传输；整次文件发送持有发送锁，块之间不会插入其他数据。
-          const written = await api.connSend(Array.from(bytes));
-          useRxStore().append(bytes, "tx", Date.now(), undefined, true, written);
+          await api.connSend(Array.from(bytes));
           fileProgress.value = Math.round((end / file.size) * 100);
         }
         return true;

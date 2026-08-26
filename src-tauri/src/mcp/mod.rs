@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod schema;
 pub mod server;
+pub mod tools;
 pub mod transport;
 
 pub use schema::{
@@ -18,7 +19,8 @@ pub use schema::{
     MAX_WAIT_BYTES, MAX_WAIT_TIMEOUT_MS,
 };
 pub use server::{
-    dispatch, RpcDispatchError, MCP_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION,
-    SUPPORTED_PROTOCOL_VERSIONS,
+    dispatch, dispatch_with_context, RpcDispatchError, MCP_PROTOCOL_VERSION, SERVER_NAME,
+    SERVER_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
 };
+pub use tools::{AppToolControlContext, ToolControlContext};
 pub use transport::{McpServer, McpServerHandle, MAX_CONCURRENT_REQUESTS, MAX_REQUEST_BODY_BYTES};

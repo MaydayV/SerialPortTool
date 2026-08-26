@@ -5,7 +5,9 @@
 //! loopback interface when started by `McpServer`.
 
 use super::auth::{AuthFailure, LocalBearerAuth};
-use super::server::{dispatch, SUPPORTED_PROTOCOL_VERSIONS};
+use super::server::{dispatch_with_context, SUPPORTED_PROTOCOL_VERSIONS};
+use super::tools::{AppToolControlContext, ToolControlContext};
+use crate::control::AppControlService;
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode};
@@ -18,6 +20,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use tauri::{AppHandle, Runtime};
 use tokio::net::TcpListener;
 use tokio_stream::once;
 use tokio_util::sync::CancellationToken;
@@ -32,10 +35,12 @@ struct ServerState {
     auth: LocalBearerAuth,
     shutdown: CancellationToken,
     active_requests: Arc<AtomicUsize>,
+    control: Option<Arc<dyn ToolControlContext>>,
 }
 
 pub struct McpServer {
     auth: LocalBearerAuth,
+    control: Option<Arc<dyn ToolControlContext>>,
 }
 
 pub struct McpServerHandle {
@@ -53,7 +58,17 @@ impl McpServer {
     pub fn new() -> Result<Self, getrandom::Error> {
         Ok(Self {
             auth: LocalBearerAuth::new()?,
+            control: None,
         })
+    }
+
+    pub fn with_control<R: Runtime>(
+        mut self,
+        service: Arc<AppControlService>,
+        app: AppHandle<R>,
+    ) -> Self {
+        self.control = Some(Arc::new(AppToolControlContext::new(service, app)));
+        self
     }
 
     pub fn start(self) -> std::io::Result<McpServerHandle> {
@@ -65,6 +80,7 @@ impl McpServer {
             auth: self.auth.clone(),
             shutdown: shutdown.clone(),
             active_requests: Arc::new(AtomicUsize::new(0)),
+            control: self.control.clone(),
         });
         let router = router(state);
         let server_shutdown = shutdown.clone();
@@ -147,6 +163,7 @@ pub fn router_for_tests(auth: LocalBearerAuth) -> Router {
         auth,
         shutdown: CancellationToken::new(),
         active_requests: Arc::new(AtomicUsize::new(0)),
+        control: None,
     });
     router(state)
 }
@@ -261,7 +278,13 @@ async fn handle_mcp(State(state): State<Arc<ServerState>>, request: Request<Body
     };
     let id = request.id.clone();
     if request.notification {
-        if dispatch(&request.method, request.params.as_ref()).is_err() {
+        if dispatch_with_context(
+            &request.method,
+            request.params.as_ref(),
+            state.control.as_deref(),
+        )
+        .is_err()
+        {
             // JSON-RPC notifications never receive a response, including errors.
         }
         return Response::builder()
@@ -270,7 +293,11 @@ async fn handle_mcp(State(state): State<Arc<ServerState>>, request: Request<Body
             .unwrap_or_else(|_| Response::new(Body::empty()));
     }
 
-    let result = dispatch(&request.method, request.params.as_ref());
+    let result = dispatch_with_context(
+        &request.method,
+        request.params.as_ref(),
+        state.control.as_deref(),
+    );
     match result {
         Ok(result) => rpc_success_response(id, result, accept),
         Err(error) => rpc_error_response(id, error.code, error.message, error.data, accept),

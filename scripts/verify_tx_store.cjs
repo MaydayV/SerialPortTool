@@ -20,6 +20,7 @@ async function main() {
   let maxActive = 0;
   const starts = [];
   const invocations = [];
+  const eventListeners = new Map();
   const originalLoad = Module._load;
   Module._load = function (request, parent, isMain) {
     if (request === "@tauri-apps/api/core") {
@@ -32,12 +33,20 @@ async function main() {
           invocations.push(args.data);
           await new Promise((resolve) => setTimeout(resolve, 4));
           active -= 1;
+          eventListeners.get("tx-data")?.({
+            payload: { data: args.data, ts: Date.now() },
+          });
           return args.data.length;
         },
       };
     }
     if (request === "@tauri-apps/api/event") {
-      return { listen: async () => () => {} };
+      return {
+        listen: async (event, callback) => {
+          eventListeners.set(event, callback);
+          return () => eventListeners.delete(event);
+        },
+      };
     }
     return originalLoad.call(this, request, parent, isMain);
   };
@@ -48,6 +57,7 @@ async function main() {
   const conn = bundle.useConnStore();
   const rx = bundle.useRxStore();
   const protocol = bundle.useProtocolStore();
+  await rx.setup();
   conn.status = "connected";
 
   let pass = 0;

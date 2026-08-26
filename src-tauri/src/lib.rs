@@ -199,19 +199,17 @@ fn validate_output_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Serialize)]
-struct PortInfo {
-    name: String,
-    desc: String,
-    port_type: String,
-    vid: Option<u16>,
-    pid: Option<u16>,
-    serial: Option<String>,
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct PortInfo {
+    pub name: String,
+    pub desc: String,
+    pub port_type: String,
+    pub vid: Option<u16>,
+    pub pid: Option<u16>,
+    pub serial: Option<String>,
 }
 
-/// 枚举系统串口列表
-#[tauri::command]
-fn list_ports() -> Result<Vec<PortInfo>, String> {
+pub fn list_ports_info() -> Result<Vec<PortInfo>, String> {
     let ports = serialport::available_ports().map_err(|e| e.to_string())?;
     Ok(ports
         .into_iter()
@@ -250,10 +248,16 @@ fn list_ports() -> Result<Vec<PortInfo>, String> {
         .collect())
 }
 
+/// 枚举系统串口列表
+#[tauri::command]
+fn list_ports() -> Result<Vec<PortInfo>, String> {
+    list_ports_info()
+}
+
 /// 打开连接（串口 / TCP / UDP）
 #[tauri::command]
 fn conn_open(
-    service: tauri::State<'_, AppControlService>,
+    service: tauri::State<'_, Arc<AppControlService>>,
     app: tauri::AppHandle,
     cfg: ConnConfig,
 ) -> Result<(), String> {
@@ -263,7 +267,7 @@ fn conn_open(
 /// 关闭连接
 #[tauri::command]
 fn conn_close(
-    service: tauri::State<'_, AppControlService>,
+    service: tauri::State<'_, Arc<AppControlService>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     service.close(app, ActionOrigin::Ui).map(|_| ())
@@ -272,13 +276,21 @@ fn conn_close(
 /// 发送数据（接收 bytes 数组）
 #[tauri::command]
 fn conn_send(
-    service: tauri::State<'_, AppControlService>,
+    service: tauri::State<'_, Arc<AppControlService>>,
     app: tauri::AppHandle,
     data: Vec<u8>,
 ) -> Result<usize, String> {
     service
         .send(data, app, ActionOrigin::Ui)
         .map(|action| action.result)
+}
+
+#[tauri::command]
+fn conn_clear_received(
+    service: tauri::State<'_, Arc<AppControlService>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    service.clear_received(app, ActionOrigin::Ui).map(|_| ())
 }
 
 #[tauri::command]
@@ -365,6 +377,7 @@ fn flush_log_files(manager: tauri::State<'_, Arc<LogManager>>) -> Result<(), Str
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let log_manager = Arc::new(LogManager::default());
+    let control_service = Arc::new(AppControlService::new());
     let log_flusher = log_manager.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(LOG_FLUSH_INTERVAL);
@@ -372,23 +385,25 @@ pub fn run() {
     });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppControlService::new())
+        .manage(control_service.clone())
         .manage(log_manager)
         .invoke_handler(tauri::generate_handler![
             list_ports,
             conn_open,
             conn_close,
             conn_send,
+            conn_clear_received,
             select_output_file,
             write_user_file,
             append_log_file,
             flush_log_files
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // 端口热插拔监听
             conn::spawn_port_watcher(app.handle().clone());
             let mcp_handle = mcp::McpServer::new()
                 .map_err(|error| std::io::Error::other(error.to_string()))?
+                .with_control(control_service.clone(), app.handle().clone())
                 .start()
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
             app.manage(mcp_handle);

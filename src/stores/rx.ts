@@ -68,6 +68,8 @@ export const useRxStore = defineStore("rx", () => {
   let listenerReady = false;
   let listenerSetup: Promise<void> | null = null;
   let unlistenRx: UnlistenFn | null = null;
+  let unlistenTx: UnlistenFn | null = null;
+  let unlistenCleared: UnlistenFn | null = null;
   const textStreams = new Map<string, TextDecoder | null>();
   const ansiStreams = new Map<string, ReturnType<typeof createAnsiParserState>>();
   const decodeStreamOrder = new Map<string, true>();
@@ -389,25 +391,37 @@ export const useRxStore = defineStore("rx", () => {
     if (listenerReady) return;
     if (listenerSetup) return listenerSetup;
     listenerSetup = (async () => {
-      const unlisten = await listen<{ data: number[]; ts: number; peer?: string }>(
-        "rx-data",
-        (e) => {
-          const raw = new Uint8Array(e.payload.data);
-          const peer = typeof e.payload.peer === "string" ? e.payload.peer : undefined;
-          const key = peer ?? "default";
-          // 波形与接收显示共享同一条事件管线，避免重复反序列化和监听。
-          useGraphStore().processData(raw, key);
-          const proto = useProtocolStore();
-          const { frames, enabled } = proto.processRx(raw, key);
-          if (!enabled) {
-            append(raw, "rx", e.payload.ts, peer);
-          } else {
-            recordWire(raw, "rx", e.payload.ts, peer);
-            for (const frame of frames) append(frame, "rx", e.payload.ts, peer, false);
-          }
+      const onWire = (dir: "rx" | "tx") => (e: { payload: { data: number[]; ts: number; peer?: string } }) => {
+        const raw = new Uint8Array(e.payload.data);
+        const peer = typeof e.payload.peer === "string" ? e.payload.peer : undefined;
+        if (dir === "tx") {
+          append(raw, "tx", e.payload.ts, peer);
+          return;
         }
+        const key = peer ?? "default";
+        // 波形与接收显示共享同一条事件管线，避免重复反序列化和监听。
+        useGraphStore().processData(raw, key);
+        const proto = useProtocolStore();
+        const { frames, enabled } = proto.processRx(raw, key);
+        if (!enabled) {
+          append(raw, "rx", e.payload.ts, peer);
+        } else {
+          recordWire(raw, "rx", e.payload.ts, peer);
+          for (const frame of frames) append(frame, "rx", e.payload.ts, peer, false);
+        }
+      };
+      const rxUnlisten = await listen<{ data: number[]; ts: number; peer?: string }>(
+        "rx-data",
+        onWire("rx")
       );
-      unlistenRx = unlisten;
+      const txUnlisten = await listen<{ data: number[]; ts: number; peer?: string }>(
+        "tx-data",
+        onWire("tx")
+      );
+      const clearedUnlisten = await listen<string>("rx-cleared", () => clear());
+      unlistenRx = rxUnlisten;
+      unlistenTx = txUnlisten;
+      unlistenCleared = clearedUnlisten;
       listenerReady = true;
     })();
     try {
@@ -419,7 +433,11 @@ export const useRxStore = defineStore("rx", () => {
 
   function teardown() {
     unlistenRx?.();
+    unlistenTx?.();
+    unlistenCleared?.();
     unlistenRx = null;
+    unlistenTx = null;
+    unlistenCleared = null;
     listenerReady = false;
   }
 
