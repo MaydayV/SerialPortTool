@@ -5,7 +5,7 @@ pub mod mcp;
 
 use conn::ConnConfig;
 use control::{events::ActionOrigin, AppControlService};
-use mcp::PermissionMode;
+use mcp::{McpRuntime, PermissionMode};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -295,23 +295,34 @@ fn conn_clear_received(
 }
 
 #[tauri::command]
-fn mcp_endpoint(server: tauri::State<'_, mcp::McpServerHandle>) -> String {
-    server.endpoint()
+fn mcp_enabled(runtime: tauri::State<'_, McpRuntime>) -> bool {
+    runtime.enabled()
+}
+
+#[tauri::command]
+fn set_mcp_enabled(
+    runtime: tauri::State<'_, McpRuntime>,
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    runtime.set_enabled(enabled, app)
+}
+
+#[tauri::command]
+fn mcp_endpoint(runtime: tauri::State<'_, McpRuntime>) -> String {
+    runtime.endpoint()
 }
 
 /// Explicit user-facing pairing action. The token is never emitted with app
 /// state or ordinary MCP activity events.
 #[tauri::command]
-fn mcp_token(server: tauri::State<'_, mcp::McpServerHandle>) -> String {
-    server.local_pairing_token()
+fn mcp_token(runtime: tauri::State<'_, McpRuntime>) -> Result<String, String> {
+    runtime.token()
 }
 
 #[tauri::command]
-fn reset_mcp_token(server: tauri::State<'_, mcp::McpServerHandle>) -> Result<(), String> {
-    server
-        .reset_local_pairing_token()
-        .map(|_| ())
-        .map_err(|error| format!("重置 MCP Token 失败: {error}"))
+fn reset_mcp_token(runtime: tauri::State<'_, McpRuntime>) -> Result<(), String> {
+    runtime.reset_token()
 }
 
 #[tauri::command]
@@ -444,6 +455,7 @@ fn flush_log_files(manager: tauri::State<'_, Arc<LogManager>>) -> Result<(), Str
 pub fn run() {
     let log_manager = Arc::new(LogManager::default());
     let control_service = Arc::new(AppControlService::new());
+    let mcp_runtime = McpRuntime::new(control_service.clone());
     let log_flusher = log_manager.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(LOG_FLUSH_INTERVAL);
@@ -452,6 +464,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(control_service.clone())
+        .manage(mcp_runtime)
         .manage(log_manager)
         .invoke_handler(tauri::generate_handler![
             list_ports,
@@ -459,6 +472,8 @@ pub fn run() {
             conn_close,
             conn_send,
             conn_clear_received,
+            mcp_enabled,
+            set_mcp_enabled,
             mcp_endpoint,
             mcp_token,
             reset_mcp_token,
@@ -476,26 +491,6 @@ pub fn run() {
         .setup(move |app| {
             // 端口热插拔监听
             conn::spawn_port_watcher(app.handle().clone());
-            let mcp_handle = mcp::McpServer::new()
-                .map_err(|error| std::io::Error::other(error.to_string()))?
-                .with_control(control_service.clone(), app.handle().clone())
-                .start()
-                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
-            app.manage(mcp_handle);
-            let local_control: Arc<dyn mcp::ToolControlContext> = Arc::new(
-                mcp::AppToolControlContext::new(control_service.clone(), app.handle().clone()),
-            );
-            match control::local_ipc::LocalIpcServer::start(
-                control::local_ipc::default_endpoint(),
-                local_control,
-            ) {
-                Ok(local_ipc) => {
-                    app.manage(local_ipc);
-                }
-                Err(error) => {
-                    eprintln!("serialporttool local MCP IPC unavailable: {error}");
-                }
-            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -510,11 +505,7 @@ pub fn run() {
             if matches!(event, tauri::RunEvent::Exit) {
                 app.state::<Arc<AppControlService>>()
                     .cancel_pending_approvals();
-                app.state::<mcp::McpServerHandle>().shutdown();
-                if let Some(local_ipc) = app.try_state::<control::local_ipc::LocalIpcServerHandle>()
-                {
-                    local_ipc.shutdown();
-                }
+                app.state::<McpRuntime>().stop();
             }
         });
 }

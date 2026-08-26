@@ -18,6 +18,7 @@ import { useConnStore } from "./stores/conn";
 import { useRxStore } from "./stores/rx";
 import { useTxStore } from "./stores/tx";
 import { useGraphStore } from "./stores/graph";
+import { useAiControlStore } from "./stores/aiControl";
 import { clearConfig, loadConfig, initPersistence } from "./stores/persist";
 import { formatTime } from "./utils/bytes";
 import { saveTextFile } from "./utils/save";
@@ -29,6 +30,7 @@ const conn = useConnStore();
 const rx = useRxStore();
 const tx = useTxStore();
 const graph = useGraphStore();
+const ai = useAiControlStore();
 let teardownMcpBridge: (() => void) | null = null;
 
 const view = ref<"debug" | "graph">("debug");
@@ -36,6 +38,7 @@ const theme = ref<"light" | "dark" | "system">("light");
 
 // 设置面板
 const showSettings = ref(false);
+const settingsSection = ref<"general" | "mcp">("general");
 const settingsPanel = ref<HTMLDivElement | null>(null);
 let settingsReturnFocus: HTMLElement | null = null;
 
@@ -286,6 +289,9 @@ onMounted(() => {
   initPersistence(theme);
   rx.startRateTimer();
   if (isTauri()) {
+    void ai.setupListeners().catch((error) => {
+      ai.lastError = `MCP 监听初始化失败：${String(error)}`;
+    });
     void setupMcpFrontendBridge().then((teardown) => {
       teardownMcpBridge = teardown;
     });
@@ -411,6 +417,7 @@ onBeforeUnmount(() => {
   teardownMcpBridge = null;
   conn.teardownListeners();
   rx.teardown();
+  ai.teardown();
   onBeforeUnload();
 });
 </script>
@@ -419,7 +426,6 @@ onBeforeUnmount(() => {
   <div class="app-root">
     <ConnectionBar />
     <ProtocolPanel />
-    <AiControlPanel />
     <nav class="view-tabs" role="tablist" aria-label="工作区视图">
       <button
         class="view-tab"
@@ -445,8 +451,11 @@ onBeforeUnmount(() => {
       <span class="kbd-hint" title="全局快捷键：空格=开关连接 · H=HEX · T=时间戳 · P=暂停 · Esc=清空 · F5=刷新串口">
         空格 连接 · H HEX · P 暂停 · Esc 清空
       </span>
-      <button class="theme-btn" @click="openSettings" title="设置">
+      <button class="theme-btn settings-entry" @click="openSettings" title="设置">
         设置
+        <span v-if="ai.pendingApprovals.length" class="settings-badge" aria-label="有待处理的 MCP 审批">
+          {{ ai.pendingApprovals.length }}
+        </span>
       </button>
     </nav>
     <main class="content">
@@ -493,6 +502,7 @@ onBeforeUnmount(() => {
       <div
         ref="settingsPanel"
         class="settings-panel"
+        :class="{ 'mcp-settings-panel': settingsSection === 'mcp' }"
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
@@ -502,6 +512,28 @@ onBeforeUnmount(() => {
           <span id="settings-title" class="settings-title">设置</span>
           <button class="mini-btn" @click="closeSettings">✕ 关闭</button>
         </div>
+        <div class="settings-tabs" role="tablist" aria-label="设置分类">
+          <button
+            class="settings-tab"
+            :class="{ active: settingsSection === 'general' }"
+            role="tab"
+            :aria-selected="settingsSection === 'general'"
+            @click="settingsSection = 'general'"
+          >
+            常规
+          </button>
+          <button
+            class="settings-tab"
+            :class="{ active: settingsSection === 'mcp' }"
+            role="tab"
+            :aria-selected="settingsSection === 'mcp'"
+            @click="settingsSection = 'mcp'"
+          >
+            MCP 与 AI
+            <span v-if="ai.pendingApprovals.length" class="settings-tab-badge">{{ ai.pendingApprovals.length }}</span>
+          </button>
+        </div>
+        <div v-if="settingsSection === 'general'" class="settings-content">
         <div class="setting-row">
           <span class="setting-label">主题</span>
           <div class="seg">
@@ -578,6 +610,10 @@ onBeforeUnmount(() => {
               <button class="mini-btn" @click="renameProfile(p.name)">重命名</button>
             </div>
           </div>
+        </div>
+        </div>
+        <div v-else class="settings-content mcp-settings-content">
+          <AiControlPanel />
         </div>
         <div class="settings-foot">
           设置自动保存 · 快捷键：空格 连接 · H HEX · T 时间戳 · P 暂停 · Esc
@@ -1175,6 +1211,9 @@ select optgroup {
   overflow-y: auto;
   outline: none;
 }
+.settings-panel.mcp-settings-panel {
+  width: 680px;
+}
 .settings-head {
   display: flex;
   justify-content: space-between;
@@ -1183,6 +1222,58 @@ select optgroup {
 .settings-title {
   font-size: 15px;
   font-weight: 700;
+}
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.settings-tab {
+  position: relative;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 6px 10px 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings-tab:hover,
+.settings-tab.active {
+  color: var(--accent);
+}
+.settings-tab.active {
+  border-bottom-color: var(--accent);
+}
+.settings-tab-badge,
+.settings-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.settings-tab-badge {
+  margin-left: 4px;
+  vertical-align: 1px;
+}
+.settings-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.settings-content {
+  min-height: 0;
+}
+.mcp-settings-content {
+  margin: -4px -8px 0;
 }
 .mini-btn {
   border: 1px solid var(--btn-border);

@@ -71,6 +71,9 @@ export const api = {
   connClose: () => invoke<void>("conn_close"),
   connSend: (data: number[]) => invoke<number>("conn_send", { data }),
   connClearReceived: () => invoke<void>("conn_clear_received"),
+  mcpEnabled: () => invoke<boolean>("mcp_enabled"),
+  setMcpEnabled: (enabled: boolean) =>
+    invoke<void>("set_mcp_enabled", { enabled }),
   mcpEndpoint: () => invoke<string>("mcp_endpoint"),
   mcpToken: () => invoke<string>("mcp_token"),
   resetMcpToken: () => invoke<void>("reset_mcp_token"),

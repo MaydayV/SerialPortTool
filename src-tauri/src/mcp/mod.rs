@@ -5,11 +5,13 @@
 //! Task 4 and therefore cannot control hardware yet.
 
 pub mod auth;
+pub mod runtime;
 pub mod schema;
 pub mod server;
 pub mod tools;
 pub mod transport;
 
+pub use runtime::McpRuntime;
 pub use schema::{
     tool_definition, tool_definitions, ActionResult, ClearReceivedRequest,
     ConfigureConnectionRequest, ConnectRequest, ConnectionKind, DataEncoding, DisconnectRequest,

@@ -31,6 +31,11 @@ jobs:
       - name: 构建前端
         run: npm run build
 
+      - name: 准备 MCP sidecar
+        env:
+          MCP_SIDECAR_TARGET: x86_64-unknown-linux-gnu
+        run: npm run prepare:mcp-sidecar
+
       - name: 前端协议测试
         run: npm test
 

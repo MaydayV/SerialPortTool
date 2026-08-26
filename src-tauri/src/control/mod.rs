@@ -1323,7 +1323,7 @@ mod tests {
     #[test]
     fn approval_timeout_returns_error_with_action_id() {
         let service =
-            Arc::new(AppControlService::new().with_approval_timeout(Duration::from_millis(10)));
+            Arc::new(AppControlService::new().with_approval_timeout(Duration::from_millis(100)));
         let worker = service.clone();
         let handle =
             std::thread::spawn(move || worker.configure(test_config(), app(), ActionOrigin::Mcp));

@@ -111,14 +111,18 @@ jobs:
         include:
           - platform: 'macos-latest' # Apple Silicon (M 系列)
             args: '--target aarch64-apple-darwin'
+            sidecar_target: 'aarch64-apple-darwin'
           - platform: 'macos-latest' # Intel Mac
             args: '--target x86_64-apple-darwin'
+            sidecar_target: 'x86_64-apple-darwin'
           - platform: 'ubuntu-22.04'
             args: ''
+            sidecar_target: 'x86_64-unknown-linux-gnu'
           # 固定 VS 2022 运行环境；windows-latest 已切换到 Server 2025/VS 2026，
           # 会让 Tauri 集成测试进程在启动时出现 STATUS_ENTRYPOINT_NOT_FOUND。
           - platform: 'windows-2022'
             args: ''
+            sidecar_target: 'x86_64-pc-windows-msvc'
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v7
@@ -141,6 +145,11 @@ jobs:
 
       - name: 安装前端依赖
         run: npm ci
+
+      - name: 准备 MCP sidecar
+        env:
+          MCP_SIDECAR_TARGET: ${{ matrix.sidecar_target }}
+        run: npm run prepare:mcp-sidecar
 
       - name: 运行前端回归测试
         run: npm test
@@ -167,7 +176,7 @@ jobs:
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tagName: ${{ needs.create-release.outputs.tag_name }}
-          args: ${{ matrix.args }} --config src-tauri/tauri.bundle.conf.json
+          args: ${{ matrix.args }}
 
   publish-release:
     needs: [create-release, build-tauri]

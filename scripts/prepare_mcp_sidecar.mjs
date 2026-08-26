@@ -6,8 +6,9 @@ import process from "node:process";
 
 const root = process.cwd();
 const tauriRoot = join(root, "src-tauri");
+const explicitTarget = process.env.MCP_SIDECAR_TARGET || process.env.TAURI_ENV_TARGET_TRIPLE;
 const targetTriple =
-  process.env.TAURI_ENV_TARGET_TRIPLE ||
+  explicitTarget ||
   execFileSync("rustc", ["-vV"], { encoding: "utf8" })
     .match(/^host: (.+)$/m)?.[1]
     ?.trim();
@@ -19,7 +20,7 @@ const binaryName = process.platform === "win32" ? "serialporttool-mcp.exe" : "se
 const targetDir = process.env.CARGO_TARGET_DIR
   ? normalize(process.env.CARGO_TARGET_DIR)
   : join(tauriRoot, "target");
-const targetPrefix = process.env.TAURI_ENV_TARGET_TRIPLE ? join(targetTriple) : "";
+const targetPrefix = explicitTarget ? join(targetTriple) : "";
 const source = join(targetDir, targetPrefix, profile, binaryName);
 const stagedDir = join(tauriRoot, "binaries");
 const staged = join(stagedDir, `serialporttool-mcp-${targetTriple}${process.platform === "win32" ? ".exe" : ""}`);
@@ -27,7 +28,7 @@ const staged = join(stagedDir, `serialporttool-mcp-${targetTriple}${process.plat
 if (!statExists(source)) {
   const args = ["build", "--manifest-path", "src-tauri/Cargo.toml", "--bin", "serialporttool-mcp"];
   if (!debug) args.splice(1, 0, "--release");
-  if (process.env.TAURI_ENV_TARGET_TRIPLE) args.push("--target", targetTriple);
+  if (explicitTarget) args.push("--target", targetTriple);
   console.error(`serialporttool: building ${profile} MCP sidecar for ${targetTriple}`);
   execFileSync("cargo", args, {
     cwd: root,

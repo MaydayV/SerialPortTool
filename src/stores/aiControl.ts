@@ -133,8 +133,8 @@ export const useAiControlStore = defineStore("aiControl", () => {
     if (listenerSetup) return listenerSetup;
     listenerSetup = (async () => {
       try {
-        endpoint.value = await api.mcpEndpoint();
-        enabled.value = true;
+        enabled.value = await api.mcpEnabled();
+        endpoint.value = enabled.value ? await api.mcpEndpoint() : "";
         permissionMode.value = await api.getPermissionMode();
         pendingApprovals.value = (await api.listPendingApprovals()).slice(
           0,
@@ -172,6 +172,18 @@ export const useAiControlStore = defineStore("aiControl", () => {
   async function setPermissionMode(mode: PermissionMode) {
     await api.setPermissionMode(mode);
     permissionMode.value = mode;
+  }
+
+  async function setEnabled(next: boolean) {
+    await api.setMcpEnabled(next);
+    enabled.value = next;
+    if (!next) {
+      connected.value = false;
+      endpoint.value = "";
+      pendingApprovals.value = [];
+    } else {
+      endpoint.value = await api.mcpEndpoint();
+    }
   }
 
   async function approve(actionId: string) {
@@ -216,6 +228,7 @@ export const useAiControlStore = defineStore("aiControl", () => {
     lastActivityAt,
     setupListeners,
     setPermissionMode,
+    setEnabled,
     approve,
     deny,
     showToken,

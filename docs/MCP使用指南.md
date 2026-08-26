@@ -4,13 +4,13 @@ SerialPortTool 可以作为本机 MCP Server，让 AI Agent 调用正在运行�
 
 ## 1. 启动方式
 
-启动桌面应用后，应用会启动一个仅监听 loopback 的 Streamable HTTP MCP endpoint：
+启动桌面应用后，进入「设置 → MCP 与 AI」，显式点击「启用 MCP」后，应用才会启动仅监听 loopback 的 Streamable HTTP MCP endpoint：
 
 ```text
 http://127.0.0.1:<随机端口>/mcp
 ```
 
-端口和随机 pairing token 会显示在 GUI 的「AI 控制」面板中。token 只有用户显式点击显示/复制时才会返回，不会写入普通事件、操作时间线或日志。
+端口和随机 pairing token 会显示在设置页的「MCP 与 AI」页面中。停用 MCP 后 HTTP 服务和 macOS/Linux Unix socket 都会关闭；token 只有用户显式点击显示/复制时才会返回，不会写入普通事件、操作时间线或日志。
 
 默认权限模式是 `ask`：
 
@@ -112,8 +112,8 @@ socket 权限为 `0600`，IPC frame 使用大端 u32 长度前缀，并限制最
 
 - 模板和波形导出尚未作为 MCP 工具开放，避免 MCP 任意写入本地路径。
 - 当前已实现并验证 macOS/Linux Unix socket；Windows Named Pipe 尚未实现，Windows 分支会返回明确的 unsupported 错误，不会退化成 TCP 假装支持。
-- macOS `.app` 已验证包含 GUI 和 `serialporttool-mcp` sidecar；Windows Named Pipe 和 Windows sidecar 发布仍待完成。
+- macOS `.app` 和 DMG 已验证包含 GUI 主程序与 `serialporttool-mcp` sidecar；Windows Named Pipe 暂不处理。
 
 ## English summary
 
-SerialPortTool exposes a loopback-only Streamable HTTP MCP server from the running GUI. The default permission mode is `ask`; write operations wait for explicit approval in the desktop UI. The stdio proxy forwards JSON-RPC over a bounded local IPC framing layer and never writes diagnostics to stdout. macOS/Linux Unix sockets are implemented and verified; Windows Named Pipe and packaged sidecar distribution remain pending.
+SerialPortTool exposes an opt-in loopback-only Streamable HTTP MCP server from the running GUI. Enable it explicitly in Settings → MCP & AI. The default permission mode is `ask`; write operations wait for explicit approval in the settings page. The stdio proxy forwards JSON-RPC over a bounded local IPC framing layer and never writes diagnostics to stdout. macOS/Linux Unix sockets and the macOS packaged sidecar are implemented and verified; Windows Named Pipe is intentionally deferred.

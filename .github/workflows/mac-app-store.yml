@@ -44,6 +44,7 @@ jobs:
       - name: 安装依赖并执行回归检查
         run: |
           npm ci
+          MCP_SIDECAR_TARGET=aarch64-apple-darwin npm run prepare:mcp-sidecar
           npm test
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- --test-threads=1

@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
-import { isTauri } from "@tauri-apps/api/core";
+import { ref } from "vue";
 import { useAiControlStore, type AiTimelineEntry } from "../stores/aiControl";
 
 const ai = useAiControlStore();
@@ -8,6 +7,7 @@ const token = ref("");
 const tokenVisible = ref(false);
 const tokenMessage = ref("");
 const actionError = ref("");
+const toggling = ref(false);
 
 const statusLabel: Record<string, string> = {
   success: "成功",
@@ -33,6 +33,18 @@ async function changeMode(event: Event) {
     actionError.value = "";
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function toggleMcp() {
+  toggling.value = true;
+  try {
+    await ai.setEnabled(!ai.enabled);
+    actionError.value = "";
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    toggling.value = false;
   }
 }
 
@@ -85,21 +97,26 @@ async function resetToken() {
   }
 }
 
-onMounted(() => {
-  if (isTauri()) {
-    void ai.setupListeners().catch(() => {});
-  }
-});
-
-onBeforeUnmount(() => ai.teardown());
 </script>
 
 <template>
-  <section class="ai-control" aria-label="AI 控制状态">
+  <section class="ai-control" aria-label="MCP 与 AI 控制设置">
     <div class="ai-head">
-      <span class="ai-title">AI 控制</span>
+      <div class="ai-heading">
+        <span class="ai-title">MCP 与 AI 控制</span>
+        <span class="ai-subtitle">后台操作记录与审批</span>
+      </div>
       <span class="ai-dot" :class="{ on: ai.enabled && ai.connected }"></span>
-      <span class="ai-status">{{ ai.connected ? "已连接" : ai.enabled ? "未连接" : "未启用" }}</span>
+      <span class="ai-status">{{ ai.connected ? "已连接" : ai.enabled ? "已启用，等待连接" : "未启用" }}</span>
+      <button
+        class="ai-btn enable-btn"
+        :class="{ active: ai.enabled }"
+        :disabled="toggling"
+        :aria-pressed="ai.enabled"
+        @click="toggleMcp"
+      >
+        {{ toggling ? "处理中…" : ai.enabled ? "停用 MCP" : "启用 MCP" }}
+      </button>
       <span v-if="ai.endpoint" class="ai-endpoint" :title="ai.endpoint">{{ ai.endpoint }}</span>
       <label class="mode-label" for="ai-permission-mode">权限</label>
       <select
@@ -121,9 +138,9 @@ onBeforeUnmount(() => ai.teardown());
             <code>{{ ai.endpoint || "桌面应用启动后可用" }}</code>
           </div>
           <div class="token-actions">
-            <button class="ai-btn" @click="revealToken">{{ tokenVisible ? "刷新显示 Token" : "显示 Token" }}</button>
-            <button class="ai-btn" :disabled="!token" @click="copyToken">复制</button>
-            <button class="ai-btn danger" @click="resetToken">重置 Token</button>
+            <button class="ai-btn" :disabled="!ai.enabled" @click="revealToken">{{ tokenVisible ? "刷新显示 Token" : "显示 Token" }}</button>
+            <button class="ai-btn" :disabled="!token || !ai.enabled" @click="copyToken">复制</button>
+            <button class="ai-btn danger" :disabled="!ai.enabled" @click="resetToken">重置 Token</button>
           </div>
           <div v-if="tokenVisible" class="token-value"><code>{{ token }}</code></div>
           <div v-if="tokenMessage" class="ai-hint">{{ tokenMessage }}</div>
@@ -146,7 +163,7 @@ onBeforeUnmount(() => ai.teardown());
     </div>
 
     <div class="timeline-head">
-      <span>最近操作</span>
+      <span>后台操作日志</span>
       <span v-if="actionError || ai.lastError" class="ai-error">{{ actionError || ai.lastError }}</span>
     </div>
     <div v-if="ai.recentTimeline.length" class="timeline" aria-label="AI 操作时间线">
@@ -164,25 +181,28 @@ onBeforeUnmount(() => ai.teardown());
 <style scoped>
 .ai-control {
   flex: 0 0 auto;
-  margin: 8px 12px 0;
-  padding: 7px 10px;
+  margin: 0;
+  padding: 14px;
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
 }
 .ai-head, .timeline-head, .endpoint-row, .token-actions, .approval-card {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+.ai-head { flex-wrap: wrap; }
+.ai-heading { display: grid; gap: 2px; min-width: 132px; }
 .ai-title { color: var(--text-primary); font-weight: 700; }
+.ai-subtitle { color: var(--text-tertiary); font-size: 11px; }
 .ai-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary); }
 .ai-dot.on { background: var(--success); }
 .ai-status { color: var(--text-primary); white-space: nowrap; }
 .ai-endpoint { min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-tertiary); font-family: ui-monospace, monospace; }
-.mode-label { margin-left: auto; color: var(--text-tertiary); }
+.mode-label { margin-left: auto; color: var(--text-tertiary); white-space: nowrap; flex-shrink: 0; }
 .mode-select { min-height: 24px; padding: 2px 24px 2px 7px; font-size: 12px; }
 .ai-more { position: relative; }
 .ai-more summary { cursor: pointer; color: var(--accent); list-style: none; }
@@ -195,6 +215,8 @@ onBeforeUnmount(() => ai.teardown());
 .ai-btn { min-height: 24px; padding: 3px 8px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); background: var(--btn-bg); color: var(--text-secondary); cursor: pointer; font-size: 11px; }
 .ai-btn:hover { background: var(--btn-hover); color: var(--text-primary); }
 .ai-btn:disabled { opacity: .45; cursor: not-allowed; }
+.enable-btn { color: var(--accent); }
+.enable-btn.active { color: var(--danger); }
 .ai-btn.danger { color: var(--danger); }
 .ai-btn.approve { color: var(--success); }
 .token-value { margin-top: 8px; padding: 6px; background: var(--edit-bg); border-radius: var(--radius-sm); }
@@ -208,7 +230,7 @@ onBeforeUnmount(() => ai.teardown());
 .approval-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
 .timeline-head { margin-top: 7px; color: var(--text-tertiary); }
 .ai-error { margin-left: auto; color: var(--danger); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.timeline { display: grid; gap: 2px; margin-top: 4px; max-height: 116px; overflow-y: auto; }
+.timeline { display: grid; gap: 4px; margin-top: 6px; max-height: 220px; overflow-y: auto; }
 .timeline-row { display: flex; align-items: center; gap: 7px; min-width: 0; line-height: 18px; }
 .timeline-time { color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .timeline-label { color: var(--text-primary); white-space: nowrap; }
