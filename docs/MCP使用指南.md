@@ -26,7 +26,7 @@ http://127.0.0.1:<随机端口>/mcp
 - `get_state`
 - `read_received`
 - `wait_for_data`
-- `get_connection_profiles`（当前 frontend bridge 尚未接入，返回明确错误）
+- `get_connection_profiles`
 - `get_protocol_templates`
 - `get_protocol_state`
 - `get_frame_statistics`
@@ -110,10 +110,9 @@ socket 权限为 `0600`，IPC frame 使用大端 u32 长度前缀，并限制最
 
 ## 6. 当前限制
 
-- `get_connection_profiles` 仍未接入 frontend bridge。
 - 模板和波形导出尚未作为 MCP 工具开放，避免 MCP 任意写入本地路径。
 - 当前已实现并验证 macOS/Linux Unix socket；Windows Named Pipe 尚未实现，Windows 分支会返回明确的 unsupported 错误，不会退化成 TCP 假装支持。
-- Tauri `.app` 已验证包含 GUI；`serialporttool-mcp` 二进制可独立构建，但尚未自动作为 sidecar 放入所有平台发布安装包。
+- macOS `.app` 已验证包含 GUI 和 `serialporttool-mcp` sidecar；Windows Named Pipe 和 Windows sidecar 发布仍待完成。
 
 ## English summary
 

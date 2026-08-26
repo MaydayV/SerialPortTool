@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run prepare:mcp-sidecar",
     "frontendDist": "../dist"
   },
   "app": {
@@ -35,6 +35,7 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": ["binaries/serialporttool-mcp"],
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "跨平台串口调试助手：串口/TCP/UDP 收发、协议编解码、波形图",

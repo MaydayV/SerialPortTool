@@ -2,7 +2,7 @@ use serde_json::json;
 use serialporttool_lib::control::{AppControlService, ControlActionOrigin};
 use serialporttool_lib::mcp::server::dispatch_with_context;
 use serialporttool_lib::mcp::tools::{call_tool, AppToolControlContext, ToolControlContext};
-use serialporttool_lib::mcp::{McpServer, PermissionMode, ToolErrorCode, MCP_PROTOCOL_VERSION};
+use serialporttool_lib::mcp::{McpServer, PermissionMode, MCP_PROTOCOL_VERSION};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -128,21 +128,17 @@ fn read_and_clear_use_the_same_bounded_receive_buffer() {
 }
 
 #[test]
-fn unsupported_frontend_bridge_fails_explicitly_without_fake_success() {
+fn frontend_bridge_fails_explicitly_without_fake_success() {
     let service = AppControlService::new();
     let app = mock_app();
     let result = call_tool(&service, &app, "get_connection_profiles", Some(&json!({})));
 
     assert!(result.is_error);
-    assert_eq!(
-        result.structured_content["error"]["code"],
-        "transport_error"
-    );
-    assert_eq!(
-        result.structured_content["error"]["details"]["implemented"],
-        false
-    );
-    assert_eq!(ToolErrorCode::TransportError.to_string(), "transport_error");
+    assert_eq!(result.structured_content["error"]["code"], "timeout");
+    assert!(result.structured_content["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("bridge"));
 }
 
 #[test]

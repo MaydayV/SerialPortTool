@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "prepare:mcp-sidecar": "node scripts/prepare_mcp_sidecar.mjs",
     "test": "node scripts/verify_crc.mjs && node scripts/verify_bytes.cjs && node scripts/verify_curve.cjs && node scripts/verify_protocol.cjs && node scripts/verify_protocol_store.cjs && node scripts/verify_graph_store.cjs && node scripts/verify_rx_store.cjs && node scripts/verify_tx_store.cjs && node scripts/verify_app_store.mjs && node scripts/verify_ai_control.cjs && node scripts/verify_mcp_frontend_bridge.cjs",
     "appstore:check": "node scripts/verify_app_store.mjs",
     "appstore:build": "node scripts/macos-app-store.mjs",

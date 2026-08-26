@@ -771,7 +771,11 @@ fn schema_for(name: &str) -> (Value, Value) {
         ),
         "get_connection_profiles" => (
             empty_schema(),
-            standard_output_schema(json!({"type": "array", "items": {"type": "object"}})),
+            standard_output_schema(json!({
+                "type": "object",
+                "required": ["profiles"],
+                "properties": {"profiles": {"type": "array", "maxItems": 100, "items": {"type": "object"}}}
+            })),
         ),
         "configure_connection" => (
             object_schema(

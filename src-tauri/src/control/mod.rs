@@ -383,6 +383,28 @@ impl AppControlService {
         Ok(state)
     }
 
+    pub fn connection_profiles<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<serde_json::Value, String> {
+        let value =
+            self.frontend_bridge
+                .request(app, "connection.get_profiles", serde_json::json!({}))?;
+        let profiles = value
+            .get("profiles")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "前端 bridge 连接收藏响应无效".to_string())?;
+        if profiles.len() > 100
+            || serde_json::to_vec(&value)
+                .map_err(|error| error.to_string())?
+                .len()
+                > MAX_FRONTEND_BRIDGE_RESPONSE_BYTES
+        {
+            return Err("前端 bridge 连接收藏响应超过大小限制".into());
+        }
+        Ok(value)
+    }
+
     pub fn graph_state<R: Runtime>(&self, app: &AppHandle<R>) -> Result<GraphState, String> {
         let value = self
             .frontend_bridge

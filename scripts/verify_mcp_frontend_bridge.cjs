@@ -13,6 +13,7 @@ const tools = read("src-tauri/src/mcp/tools.rs");
 
 const checks = [
   ["bridge handles protocol state", /protocol\.get_state/.test(bridge)],
+  ["bridge handles connection profiles", /connection\.get_profiles/.test(bridge) && /useConnStore\(\)/.test(bridge)],
   ["bridge handles protocol selection", /protocol\.select/.test(bridge) && /store\.select\(protocolId\)/.test(bridge)],
   ["bridge handles graph state/data/clear", /graph\.get_state/.test(bridge) && /graph\.get_data/.test(bridge) && /graph\.clear/.test(bridge)],
   ["bridge reads existing Pinia stores", /useProtocolStore\(\)/.test(bridge) && /useGraphStore\(\)/.test(bridge)],

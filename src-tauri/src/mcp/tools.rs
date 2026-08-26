@@ -107,9 +107,7 @@ pub fn call_tool<R: Runtime>(
         "get_state" => get_state(service),
         "read_received" => read_received(service, arguments),
         "wait_for_data" => wait_for_data(service, arguments),
-        "get_connection_profiles" => {
-            unavailable_bridge("连接收藏仍由 Vue Pinia 持有，MCP bridge 尚未接入；不会伪造成功结果")
-        }
+        "get_connection_profiles" => get_connection_profiles(service, app),
         "configure_connection" => configure_connection(service, app, arguments),
         "connect" => connect(service, app, arguments),
         "disconnect" => disconnect(service, app, arguments),
@@ -135,6 +133,22 @@ pub fn call_tool<R: Runtime>(
         "get_graph_data" => get_graph_data(service, app, arguments),
         "clear_graph" => clear_graph(service, app, arguments),
         _ => ToolResult::error(&ToolError::invalid_params(format!("unknown tool: {name}"))),
+    }
+}
+
+fn get_connection_profiles<R: Runtime>(
+    service: &AppControlService,
+    app: &AppHandle<R>,
+) -> ToolResult {
+    match service.connection_profiles(app) {
+        Ok(value) => {
+            let count = value
+                .get("profiles")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            ToolResult::success(&value, format!("已读取 {} 个连接收藏", count))
+        }
+        Err(error) => ToolResult::error(&tool_error_from_string(&error)),
     }
 }
 
@@ -413,13 +427,6 @@ fn network_target(target: &str, port: u16) -> String {
     } else {
         format!("{target}:{port}")
     }
-}
-
-fn unavailable_bridge(message: &str) -> ToolResult {
-    ToolResult::error(
-        &ToolError::new(ToolErrorCode::TransportError, message)
-            .with_details(json!({ "bridge": "frontend_pinia", "implemented": false })),
-    )
 }
 
 fn read_error(error: &str) -> ToolError {

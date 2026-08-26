@@ -1,12 +1,19 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api, type McpFrontendBridgeResponse } from "./api";
+import { useConnStore } from "./stores/conn";
 import { useGraphStore, type CurveSeries } from "./stores/graph";
 import { useProtocolStore } from "./stores/protocol";
 import type { FrameTemplate } from "./utils/protocol";
 
 export interface McpFrontendBridgeRequest {
   request_id: string;
-  operation: "protocol.get_state" | "protocol.select" | "graph.get_state" | "graph.get_data" | "graph.clear";
+  operation:
+    | "connection.get_profiles"
+    | "protocol.get_state"
+    | "protocol.select"
+    | "graph.get_state"
+    | "graph.get_data"
+    | "graph.clear";
   payload: Record<string, unknown>;
 }
 
@@ -50,6 +57,16 @@ const MAX_SERIES = 32;
 const MAX_SERIES_NAME = 128;
 const MAX_POINTS = 20_000;
 const MAX_BYTES = 1024 * 1024;
+
+function connectionProfiles() {
+  const store = useConnStore();
+  return store.profiles.slice(0, 100).map((profile) => ({
+    name: profile.name.slice(0, 100),
+    connType: profile.connType,
+    serial: { ...profile.serial },
+    tcpudp: { ...profile.tcpudp },
+  }));
+}
 
 function protocolState(): BridgeProtocolState {
   const store = useProtocolStore();
@@ -172,6 +189,8 @@ export async function handleMcpFrontendRequest(
     throw new Error("request_id 无效");
   }
   switch (request.operation) {
+    case "connection.get_profiles":
+      return { profiles: connectionProfiles() };
     case "protocol.get_state":
       return protocolState();
     case "protocol.select": {
