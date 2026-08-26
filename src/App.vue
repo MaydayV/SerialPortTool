@@ -1271,6 +1271,9 @@ select optgroup {
 }
 .settings-content {
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 .mcp-settings-content {
   margin: -4px -8px 0;
@@ -1282,6 +1285,8 @@ select optgroup {
   border-radius: var(--radius-md);
   padding: 4px 12px;
   font-size: 12.5px;
+  line-height: 18px;
+  min-height: 28px;
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
@@ -1322,6 +1327,8 @@ select optgroup {
 }
 .setting-actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .setting-row.col {

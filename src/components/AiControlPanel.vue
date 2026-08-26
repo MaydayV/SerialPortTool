@@ -102,34 +102,39 @@ async function resetToken() {
 <template>
   <section class="ai-control" aria-label="MCP 与 AI 控制设置">
     <div class="ai-head">
-      <div class="ai-heading">
-        <span class="ai-title">MCP 与 AI 控制</span>
-        <span class="ai-subtitle">后台操作记录与审批</span>
+      <div class="ai-toolbar">
+        <div class="ai-heading">
+          <span class="ai-title">MCP 与 AI 控制</span>
+          <span class="ai-subtitle">后台操作记录与审批</span>
+        </div>
+        <span class="ai-dot" :class="{ on: ai.enabled && ai.connected }"></span>
+        <span class="ai-status">{{ ai.connected ? "已连接" : ai.enabled ? "已启用，等待连接" : "未启用" }}</span>
+        <button
+          class="ai-btn enable-btn"
+          :class="{ active: ai.enabled }"
+          :disabled="toggling"
+          :aria-pressed="ai.enabled"
+          @click="toggleMcp"
+        >
+          {{ toggling ? "处理中…" : ai.enabled ? "停用 MCP" : "启用 MCP" }}
+        </button>
+        <span v-if="ai.endpoint" class="ai-endpoint" :title="ai.endpoint">{{ ai.endpoint }}</span>
       </div>
-      <span class="ai-dot" :class="{ on: ai.enabled && ai.connected }"></span>
-      <span class="ai-status">{{ ai.connected ? "已连接" : ai.enabled ? "已启用，等待连接" : "未启用" }}</span>
-      <button
-        class="ai-btn enable-btn"
-        :class="{ active: ai.enabled }"
-        :disabled="toggling"
-        :aria-pressed="ai.enabled"
-        @click="toggleMcp"
-      >
-        {{ toggling ? "处理中…" : ai.enabled ? "停用 MCP" : "启用 MCP" }}
-      </button>
-      <span v-if="ai.endpoint" class="ai-endpoint" :title="ai.endpoint">{{ ai.endpoint }}</span>
-      <label class="mode-label" for="ai-permission-mode">权限</label>
-      <select
-        id="ai-permission-mode"
-        class="mode-select"
-        :value="ai.permissionMode"
-        aria-label="AI 权限模式"
-        @change="changeMode"
-      >
-        <option value="observe">观察</option>
-        <option value="ask">询问</option>
-        <option value="full">完全控制</option>
-      </select>
+      <div class="ai-permission-row">
+        <label class="mode-label" for="ai-permission-mode">AI 操作权限</label>
+        <select
+          id="ai-permission-mode"
+          class="mode-select"
+          :value="ai.permissionMode"
+          aria-label="AI 权限模式"
+          @change="changeMode"
+        >
+          <option value="observe">观察</option>
+          <option value="ask">询问</option>
+          <option value="full">完全控制</option>
+        </select>
+        <span class="permission-hint">控制 AI 是否可以执行写操作</span>
+      </div>
       <details class="ai-more">
         <summary>详情</summary>
         <div class="ai-more-body">
@@ -194,7 +199,8 @@ async function resetToken() {
   align-items: center;
   gap: 8px;
 }
-.ai-head { flex-wrap: wrap; }
+.ai-head { display: grid; gap: 10px; }
+.ai-toolbar { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ai-heading { display: grid; gap: 2px; min-width: 132px; }
 .ai-title { color: var(--text-primary); font-weight: 700; }
 .ai-subtitle { color: var(--text-tertiary); font-size: 11px; }
@@ -202,8 +208,10 @@ async function resetToken() {
 .ai-dot.on { background: var(--success); }
 .ai-status { color: var(--text-primary); white-space: nowrap; }
 .ai-endpoint { min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-tertiary); font-family: ui-monospace, monospace; }
-.mode-label { margin-left: auto; color: var(--text-tertiary); white-space: nowrap; flex-shrink: 0; }
+.ai-permission-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding-top: 1px; }
+.mode-label { color: var(--text-tertiary); white-space: nowrap; flex-shrink: 0; }
 .mode-select { min-height: 24px; padding: 2px 24px 2px 7px; font-size: 12px; }
+.permission-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-tertiary); font-size: 11px; }
 .ai-more { position: relative; }
 .ai-more summary { cursor: pointer; color: var(--accent); list-style: none; }
 .ai-more summary::-webkit-details-marker { display: none; }
@@ -242,7 +250,9 @@ async function resetToken() {
 @media (max-width: 800px) {
   .ai-endpoint, .timeline-summary { display: none; }
   .approval-card { align-items: flex-start; flex-direction: column; }
-  .mode-label { margin-left: 4px; }
+  .ai-toolbar { flex-wrap: wrap; }
+  .ai-permission-row { flex-wrap: wrap; }
+  .permission-hint { flex-basis: 100%; }
   .ai-more-body { right: -8px; width: min(390px, calc(100vw - 32px)); }
 }
 </style>

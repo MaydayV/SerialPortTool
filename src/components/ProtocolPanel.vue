@@ -70,7 +70,7 @@ const isPassThrough = computed(
     !store.active.length.enabled &&
     store.active.checksum === "none"
 );
-const rxHasBoundary = computed(() => isPassThrough.value || store.canDecodeActive);
+const rxHasBoundary = computed(() => store.canDecodeActive);
 watch(
   () => store.canDecodeActive,
   (safe) => {
@@ -141,21 +141,22 @@ function onRemove() {
           {{ t.name }}
         </option>
       </select>
-      <label class="switch">
+      <label class="switch" :class="{ disabled: !rxHasBoundary }" :title="rxHasBoundary ? '接收数据按当前模板解帧' : '当前模板没有长度字段或帧尾，无法安全解帧'">
         <input
           type="checkbox"
           v-model="store.rxEnabled"
-          :disabled="isPassThrough || !rxHasBoundary"
+          :disabled="!rxHasBoundary"
         />
         <span>解帧</span>
       </label>
       <span v-if="!isPassThrough && !rxHasBoundary" class="desc">
-        缺少长度域/帧尾，仅可组帧
+        当前模板缺少长度域/帧尾，解帧不可用
       </span>
-      <label class="switch">
+      <label class="switch" :class="{ disabled: isPassThrough }" :title="isPassThrough ? '透传模式不需要组帧，请选择带边界的协议模板' : '发送数据按当前模板组帧'">
         <input type="checkbox" v-model="store.txEnabled" :disabled="isPassThrough" />
         <span>组帧</span>
       </label>
+      <span v-if="isPassThrough" class="desc">当前为透传，请选择协议模板后启用解帧/组帧</span>
       <span v-if="store.active.description" class="desc">
         {{ store.active.description }}
       </span>
@@ -295,6 +296,10 @@ function onRemove() {
   font-size: 12.5px;
   color: var(--text-secondary);
   cursor: pointer;
+}
+.switch.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .switch input {
   accent-color: var(--accent);
