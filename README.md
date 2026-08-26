@@ -89,6 +89,14 @@ npm run tauri build
 
 产物输出到 `src-tauri/target/release/bundle/`，支持 dmg（macOS）、msi/nsis（Windows）、deb/appimage（Linux）。
 
+### MCP / AI Agent 控制
+- 内置仅 loopback 可访问的 Streamable HTTP MCP Server，AI Agent 控制正在运行的真实 GUI
+- 默认 `ask` 权限模式：连接、发送、清空、切换协议等写操作必须经过用户审批
+- AI 控制面板展示 endpoint、连接状态、操作时间线和待审批动作
+- 支持协议模板、解帧统计、波形状态和有界波形数据读取
+- macOS/Linux 提供 `serialporttool-mcp` stdio 代理和 Unix socket 本地 IPC
+- 详细配置、工具列表、安全边界和当前限制见 [MCP 使用指南](docs/MCP使用指南.md)
+
 ### Mac App Store
 
 工程包含独立的 Mac App Store 沙盒、隐私清单、签名、Universal PKG、在线验证和上传流程。先运行静态检查：

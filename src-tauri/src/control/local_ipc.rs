@@ -101,6 +101,7 @@ pub fn read_frame<R: Read>(reader: &mut R) -> Result<Option<Vec<u8>>, FrameError
     Ok(Some(payload))
 }
 
+#[cfg(unix)]
 fn read_frame_with_timeout<R: Read>(
     reader: &mut R,
     timeout: Duration,
