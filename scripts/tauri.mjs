@@ -8,6 +8,7 @@ const env = { ...process.env };
 if (args[0] === "build" && args.includes("--bundles") && args.includes("dmg") && !env.CI) {
   env.CI = "true";
 }
-const result = spawnSync("tauri", args, { env, stdio: "inherit", shell: false });
+const tauriCommand = process.platform === "win32" ? "tauri.cmd" : "tauri";
+const result = spawnSync(tauriCommand, args, { env, stdio: "inherit", shell: false });
 if (result.error) throw result.error;
 process.exit(result.status ?? 1);

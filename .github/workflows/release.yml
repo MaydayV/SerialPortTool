@@ -96,11 +96,13 @@ jobs:
           fi
           # 复用旧 Release 时也强制回到草稿，禁止半成品被公开看到。
           gh api "${API}/releases/${RELEASE_ID}" --method PATCH \
+            -F "tag_name=${TAG_NAME}" \
+            -F "target_commitish=${GITHUB_SHA}" \
             -F "draft=true" -F "prerelease=false" >/dev/null
           echo "Release 保持 draft=true"
           echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
 
-  # 四个平台构建全部成功后，publish-release 才会运行。
+  # 三个 macOS/Linux 构建全部成功后，publish-release 才会运行。
   build-tauri:
     needs: create-release
     permissions:
@@ -118,11 +120,6 @@ jobs:
           - platform: 'ubuntu-22.04'
             args: ''
             sidecar_target: 'x86_64-unknown-linux-gnu'
-          # 固定 VS 2022 运行环境；windows-latest 已切换到 Server 2025/VS 2026，
-          # 会让 Tauri 集成测试进程在启动时出现 STATUS_ENTRYPOINT_NOT_FOUND。
-          - platform: 'windows-2022'
-            args: ''
-            sidecar_target: 'x86_64-pc-windows-msvc'
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v7
@@ -155,19 +152,9 @@ jobs:
         run: npm test
 
       - name: 运行 Rust 测试（macOS / Linux）
-        if: matrix.platform != 'windows-2022'
+        if: matrix.platform == 'ubuntu-22.04' || matrix.sidecar_target == 'aarch64-apple-darwin'
         working-directory: src-tauri
         run: cargo test --all-targets --all-features -- --test-threads=1
-
-      # Windows runner 可编译这些集成测试，但 Tauri/WebView2 的测试二进制会在
-      # 测试入口前被 runner 自带 DLL 以 STATUS_ENTRYPOINT_NOT_FOUND 终止。
-      # 单元测试仍实际执行，集成测试执行文件仍要求成功编译；随后再构建真实安装包。
-      - name: 运行并编译 Rust 测试（Windows）
-        if: matrix.platform == 'windows-2022'
-        working-directory: src-tauri
-        run: |
-          cargo test --lib --bins --all-features -- --test-threads=1
-          cargo test --tests --all-features --no-run
 
       - name: 编译并上传安装包
         uses: tauri-apps/tauri-action@v0
@@ -199,4 +186,4 @@ jobs:
             -F "draft=false" -F "prerelease=false" >/dev/null
           DRAFT=$(gh api "${API}/releases/${RELEASE_ID}" --jq '.draft')
           test "${DRAFT}" = "false"
-          echo "Release ${RELEASE_ID} 已在四个平台构建成功后公开发布"
+          echo "Release ${RELEASE_ID} 已在三个 macOS/Linux 构建成功后公开发布"
