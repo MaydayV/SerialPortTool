@@ -293,11 +293,30 @@ async fn handle_mcp(State(state): State<Arc<ServerState>>, request: Request<Body
             .unwrap_or_else(|_| Response::new(Body::empty()));
     }
 
-    let result = dispatch_with_context(
-        &request.method,
-        request.params.as_ref(),
-        state.control.as_deref(),
-    );
+    // Tool execution can wait for a native approval. Keep the Tokio accept
+    // thread responsive so application shutdown can cancel that wait.
+    let method = request.method.clone();
+    let params = request.params.clone();
+    let control = state.control.clone();
+    let result = tokio::select! {
+        dispatched = tokio::task::spawn_blocking(move || {
+            dispatch_with_context(&method, params.as_ref(), control.as_deref())
+        }) => match dispatched {
+            Ok(result) => result,
+            Err(error) => Err(super::server::RpcDispatchError::internal(format!(
+                "MCP tool worker failed: {error}"
+            ))),
+        },
+        _ = request_cancel.cancelled() => {
+            if let Some(control) = state.control.as_deref() {
+                control.cancel_pending();
+            }
+            return response_with_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error": "MCP request cancelled while the server was shutting down"}),
+            );
+        }
+    };
     match result {
         Ok(result) => rpc_success_response(id, result, accept),
         Err(error) => rpc_error_response(id, error.code, error.message, error.data, accept),

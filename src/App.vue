@@ -9,6 +9,7 @@ import {
 } from "vue";
 import ConnectionBar from "./components/ConnectionBar.vue";
 import ProtocolPanel from "./components/ProtocolPanel.vue";
+import AiControlPanel from "./components/AiControlPanel.vue";
 import ReceivePanel from "./components/ReceivePanel.vue";
 import SendPanel from "./components/SendPanel.vue";
 const loadGraphPanel = () => import("./components/GraphPanel.vue");
@@ -411,6 +412,7 @@ onBeforeUnmount(() => {
   <div class="app-root">
     <ConnectionBar />
     <ProtocolPanel />
+    <AiControlPanel />
     <nav class="view-tabs" role="tablist" aria-label="工作区视图">
       <button
         class="view-tab"

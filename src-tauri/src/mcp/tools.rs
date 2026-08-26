@@ -4,16 +4,20 @@ use super::schema::{
     ToolErrorCode, ToolResult, WaitForDataRequest, MAX_READ_BYTES,
 };
 use crate::conn::{ConnConfig, SerialConfig, TcpUdpConfig};
+use crate::control::events::{McpActivityEvent, McpActivityStage};
 use crate::control::{AppControlService, ControlActionOrigin as ActionOrigin};
 use crate::list_ports_info;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
-use tauri::{AppHandle, Runtime};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Runtime};
 
 pub trait ToolControlContext: Send + Sync {
     fn call(&self, name: &str, arguments: Option<&Value>) -> ToolResult;
+
+    fn cancel_pending(&self) {}
 }
 
 pub struct AppToolControlContext<R: Runtime> {
@@ -29,7 +33,65 @@ impl<R: Runtime> AppToolControlContext<R> {
 
 impl<R: Runtime> ToolControlContext for AppToolControlContext<R> {
     fn call(&self, name: &str, arguments: Option<&Value>) -> ToolResult {
-        call_tool(&self.service, &self.app, name, arguments)
+        self.emit_activity(McpActivityStage::Connected, name, "MCP 客户端已连接", None);
+        self.emit_activity(McpActivityStage::Started, name, "MCP 调用处理中", None);
+        let result = call_tool(&self.service, &self.app, name, arguments);
+        let action_id = result
+            .structured_content
+            .get("action_id")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                result
+                    .structured_content
+                    .get("error")
+                    .and_then(|error| error.get("action_id"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_string);
+        self.emit_activity(
+            if result.is_error {
+                McpActivityStage::Failed
+            } else {
+                McpActivityStage::Finished
+            },
+            name,
+            if result.is_error {
+                "MCP 调用失败"
+            } else {
+                "MCP 调用完成"
+            },
+            action_id,
+        );
+        result
+    }
+
+    fn cancel_pending(&self) {
+        self.service.cancel_pending_approvals();
+    }
+}
+
+impl<R: Runtime> AppToolControlContext<R> {
+    fn emit_activity(
+        &self,
+        stage: McpActivityStage,
+        operation: &str,
+        summary: &str,
+        action_id: Option<String>,
+    ) {
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let _ = self.app.emit(
+            "mcp-activity",
+            McpActivityEvent {
+                stage,
+                operation: operation.to_string(),
+                summary: summary.to_string(),
+                action_id,
+                timestamp_ms,
+            },
+        );
     }
 }
 
@@ -294,7 +356,10 @@ fn tool_error_from_string(error: &str) -> ToolError {
         || error.contains("未配置")
     {
         ToolErrorCode::NotConnected
-    } else if error.contains("权限") || error.to_ascii_lowercase().contains("permission") {
+    } else if error.contains("权限")
+        || error.contains("拒绝")
+        || error.to_ascii_lowercase().contains("permission")
+    {
         ToolErrorCode::PermissionDenied
     } else if error.contains("超时") || error.to_ascii_lowercase().contains("timeout") {
         ToolErrorCode::Timeout

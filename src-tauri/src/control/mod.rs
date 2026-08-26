@@ -4,15 +4,20 @@ pub mod events;
 pub mod state;
 
 use crate::conn::{ConnConfig, ConnManager, RxObserver, StatusObserver};
+use crate::mcp::PermissionMode;
 use crate::mcp::{ActionResult, MAX_SEND_BYTES};
-use events::{ActionEvent, ActionEventLog, ActionOrigin, ActionStage};
+use events::{
+    timestamp_ms, ActionEvent, ActionEventLog, ActionOrigin, ActionStage, ApprovalRequiredEvent,
+    PendingApprovalInfo,
+};
 use serde::{Deserialize, Serialize};
 use state::{
     ConnectionConfigSummary, ConnectionSnapshot, ConnectionStatus, ControlState, RxReadError,
     RxReadResult, RxRingBuffer, RxWaitError, DEFAULT_RX_MAX_BYTES, DEFAULT_RX_MAX_RECORDS,
 };
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 
@@ -26,6 +31,20 @@ pub use state::{
 };
 
 const ACTION_ID_COUNTER_START: u64 = 1;
+const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApprovalDecision {
+    Allow,
+    Deny,
+    Cancel,
+}
+
+struct PendingApproval {
+    info: PendingApprovalInfo,
+    decision: Mutex<Option<ApprovalDecision>>,
+    changed: Condvar,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceState {
@@ -48,6 +67,9 @@ pub struct AppControlService {
     action_events: Arc<ActionEventLog>,
     action_counter: Arc<AtomicU64>,
     pending_config: Arc<Mutex<Option<ConnConfig>>>,
+    permission_mode: Arc<Mutex<PermissionMode>>,
+    pending_approvals: Arc<Mutex<HashMap<String, Arc<PendingApproval>>>>,
+    approval_timeout: Duration,
 }
 
 impl Default for AppControlService {
@@ -94,6 +116,66 @@ impl AppControlService {
             action_events,
             action_counter: Arc::new(AtomicU64::new(ACTION_ID_COUNTER_START)),
             pending_config: Arc::new(Mutex::new(None)),
+            permission_mode: Arc::new(Mutex::new(PermissionMode::Ask)),
+            pending_approvals: Arc::new(Mutex::new(HashMap::new())),
+            approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_approval_timeout(mut self, timeout: Duration) -> Self {
+        self.approval_timeout = timeout;
+        self
+    }
+
+    pub fn permission_mode(&self) -> PermissionMode {
+        self.permission_mode
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn set_permission_mode(&self, mode: PermissionMode) {
+        *self
+            .permission_mode
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode;
+    }
+
+    pub fn pending_approvals(&self) -> Vec<PendingApprovalInfo> {
+        self.pending_approvals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .map(|approval| approval.info.clone())
+            .collect()
+    }
+
+    pub fn approve_action(&self, action_id: &str) -> Result<(), String> {
+        self.resolve_approval(action_id, ApprovalDecision::Allow)
+    }
+
+    pub fn deny_action(&self, action_id: &str) -> Result<(), String> {
+        self.resolve_approval(action_id, ApprovalDecision::Deny)
+    }
+
+    pub fn cancel_pending_approvals(&self) {
+        let approvals: Vec<_> = self
+            .pending_approvals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for approval in approvals {
+            let mut decision = approval
+                .decision
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if decision.is_none() {
+                *decision = Some(ApprovalDecision::Cancel);
+                approval.changed.notify_all();
+            }
         }
     }
 
@@ -136,17 +218,32 @@ impl AppControlService {
         origin: ActionOrigin,
     ) -> Result<ActionResult<()>, String> {
         let summary = ConnectionConfigSummary::from(&cfg);
-        *self
-            .pending_config
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cfg.clone());
-        self.state.set_config(Some(summary));
-        self.state.set_status(ConnectionStatus::Connecting);
+        let operation = if origin == ActionOrigin::Mcp {
+            "connect"
+        } else {
+            "open"
+        };
+        let action_id =
+            self.authorize_mcp_action(&app, &origin, operation, "打开连接", "使用当前连接配置")?;
         let manager = self.manager.clone();
+        let pending_config = self.pending_config.clone();
+        let state = self.state.clone();
         let open_app = app.clone();
-        let result = self.run_action(&app, origin, "open", "打开连接", move || {
-            manager.open(cfg, open_app)
-        });
+        let result = self.run_action_with_id(
+            &app,
+            origin,
+            operation,
+            "打开连接",
+            action_id,
+            move || {
+                *pending_config
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cfg.clone());
+                state.set_config(Some(summary));
+                state.set_status(ConnectionStatus::Connecting);
+                manager.open(cfg, open_app)
+            },
+        );
         match result {
             Ok(result) => {
                 self.state.set_status(ConnectionStatus::Connected);
@@ -166,13 +263,21 @@ impl AppControlService {
         origin: ActionOrigin,
     ) -> Result<ActionResult<ConnectionConfigSummary>, String> {
         let summary = ConnectionConfigSummary::from(&cfg);
+        let action_id = self.authorize_mcp_action(
+            &app,
+            &origin,
+            "configure_connection",
+            "配置连接",
+            &format!("kind={}, endpoint={:?}", summary.kind, summary.endpoint),
+        )?;
         let pending_config = self.pending_config.clone();
         let state = self.state.clone();
-        self.run_action(
+        self.run_action_with_id(
             &app,
             origin,
             "configure_connection",
             "配置连接",
+            action_id,
             move || {
                 *pending_config
                     .lock()
@@ -202,11 +307,25 @@ impl AppControlService {
         app: AppHandle<R>,
         origin: ActionOrigin,
     ) -> Result<ActionResult<()>, String> {
+        let operation = if origin == ActionOrigin::Mcp {
+            "disconnect"
+        } else {
+            "close"
+        };
+        let action_id =
+            self.authorize_mcp_action(&app, &origin, operation, "关闭连接", "关闭当前活动连接")?;
         let manager = self.manager.clone();
-        let result = self.run_action(&app, origin, "close", "关闭连接", move || {
-            manager.close();
-            Ok(())
-        });
+        let result = self.run_action_with_id(
+            &app,
+            origin,
+            operation,
+            "关闭连接",
+            action_id,
+            move || {
+                manager.close();
+                Ok(())
+            },
+        );
         self.state.set_status(ConnectionStatus::Closed);
         result
     }
@@ -223,13 +342,32 @@ impl AppControlService {
                 MAX_SEND_BYTES / (1024 * 1024)
             ));
         }
+        let operation = if origin == ActionOrigin::Mcp {
+            "send_data"
+        } else {
+            "send"
+        };
+        let action_id = self.authorize_mcp_action(
+            &app,
+            &origin,
+            operation,
+            "发送数据",
+            &format!("binary payload, {} bytes", data.len()),
+        )?;
         let manager = self.manager.clone();
         let tx_data = data.clone();
-        let result = self.run_action(&app, origin, "send", "发送数据", move || {
-            let queue = manager.send_queue_lock();
-            let _queue_guard = queue.lock().map_err(|_| "发送队列锁异常".to_string())?;
-            manager.send(&data)
-        });
+        let result = self.run_action_with_id(
+            &app,
+            origin,
+            operation,
+            "发送数据",
+            action_id,
+            move || {
+                let queue = manager.send_queue_lock();
+                let _queue_guard = queue.lock().map_err(|_| "发送队列锁异常".to_string())?;
+                manager.send(&data)
+            },
+        );
         if let Ok(action) = &result {
             self.state.record_tx(action.result);
             let payload = crate::conn::RxPayload {
@@ -284,13 +422,21 @@ impl AppControlService {
         app: AppHandle<R>,
         origin: ActionOrigin,
     ) -> Result<ActionResult<ClearReceivedSummary>, String> {
+        let action_id = self.authorize_mcp_action(
+            &app,
+            &origin,
+            "clear_received",
+            "清空接收缓冲",
+            "清除当前接收记录和统计",
+        )?;
         let rx_buffer = self.rx_buffer.clone();
         let state = self.state.clone();
-        let result = self.run_action(
+        let result = self.run_action_with_id(
             &app,
             origin,
             "clear_received",
             "清空接收缓冲",
+            action_id,
             move || {
                 let summary = ClearReceivedSummary {
                     records: rx_buffer.len(),
@@ -316,17 +462,183 @@ impl AppControlService {
         format!("action-{}-{}", millis, sequence)
     }
 
+    fn resolve_approval(&self, action_id: &str, decision: ApprovalDecision) -> Result<(), String> {
+        let approval = self
+            .pending_approvals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(action_id)
+            .cloned()
+            .ok_or_else(|| "审批不存在、已结束或 action_id 无效".to_string())?;
+        let mut current = approval
+            .decision
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_some() {
+            return Err("审批不存在、已结束或 action_id 无效".to_string());
+        }
+        *current = Some(decision);
+        approval.changed.notify_all();
+        Ok(())
+    }
+
+    fn authorize_mcp_action<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        origin: &ActionOrigin,
+        operation: &str,
+        label: &str,
+        parameter_summary: &str,
+    ) -> Result<String, String> {
+        let action_id = self.next_action_id();
+        if *origin != ActionOrigin::Mcp {
+            return Ok(action_id);
+        }
+        match self.permission_mode() {
+            PermissionMode::Full => Ok(action_id),
+            PermissionMode::Observe => {
+                let message = format!("权限模式 observe 禁止 MCP 写操作: {operation}");
+                self.publish(
+                    app,
+                    ActionEvent {
+                        action_id: action_id.clone(),
+                        origin: ActionOrigin::Mcp,
+                        operation: operation.into(),
+                        stage: ActionStage::Failed,
+                        summary: message.clone(),
+                        timestamp_ms: timestamp_ms(),
+                    },
+                );
+                Err(format!("[{action_id}] {message}"))
+            }
+            PermissionMode::Ask => {
+                let expires_at_ms = timestamp_ms()
+                    .saturating_add(self.approval_timeout.as_millis().min(u64::MAX as u128) as u64);
+                let info = PendingApprovalInfo {
+                    action_id: action_id.clone(),
+                    operation: operation.into(),
+                    summary: label.into(),
+                    parameter_summary: parameter_summary.into(),
+                    source: "mcp".into(),
+                    expires_at_ms,
+                };
+                let approval = Arc::new(PendingApproval {
+                    info: info.clone(),
+                    decision: Mutex::new(None),
+                    changed: Condvar::new(),
+                });
+                self.pending_approvals
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(action_id.clone(), approval.clone());
+                self.publish(
+                    app,
+                    ActionEvent {
+                        action_id: action_id.clone(),
+                        origin: ActionOrigin::Mcp,
+                        operation: operation.into(),
+                        stage: ActionStage::ApprovalRequired,
+                        summary: format!("等待确认: {label}"),
+                        timestamp_ms: timestamp_ms(),
+                    },
+                );
+                let _ = app.emit(
+                    "approval-required",
+                    ApprovalRequiredEvent {
+                        action_id: action_id.clone(),
+                        operation: info.operation.clone(),
+                        summary: info.summary.clone(),
+                        parameter_summary: info.parameter_summary.clone(),
+                        source: info.source.clone(),
+                        expires_at_ms,
+                    },
+                );
+                let mut decision = approval
+                    .decision
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let deadline = std::time::Instant::now() + self.approval_timeout;
+                while decision.is_none() {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    let (next, result) = approval
+                        .changed
+                        .wait_timeout(decision, remaining)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    decision = next;
+                    if result.timed_out() {
+                        break;
+                    }
+                }
+                let decision = decision.take().unwrap_or(ApprovalDecision::Cancel);
+                self.pending_approvals
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&action_id);
+                match decision {
+                    ApprovalDecision::Allow => {
+                        self.publish(
+                            app,
+                            ActionEvent {
+                                action_id: action_id.clone(),
+                                origin: ActionOrigin::Mcp,
+                                operation: operation.into(),
+                                stage: ActionStage::Approved,
+                                summary: "用户已允许操作".into(),
+                                timestamp_ms: timestamp_ms(),
+                            },
+                        );
+                        Ok(action_id)
+                    }
+                    ApprovalDecision::Deny => {
+                        let message = format!("用户拒绝 MCP 操作: {operation}");
+                        self.publish(
+                            app,
+                            ActionEvent {
+                                action_id: action_id.clone(),
+                                origin: ActionOrigin::Mcp,
+                                operation: operation.into(),
+                                stage: ActionStage::Denied,
+                                summary: message.clone(),
+                                timestamp_ms: timestamp_ms(),
+                            },
+                        );
+                        Err(format!("[{action_id}] {message}"))
+                    }
+                    ApprovalDecision::Cancel => {
+                        let message = format!("MCP 操作审批超时或应用正在关闭: {operation}");
+                        self.publish(
+                            app,
+                            ActionEvent {
+                                action_id: action_id.clone(),
+                                origin: ActionOrigin::Mcp,
+                                operation: operation.into(),
+                                stage: ActionStage::TimedOut,
+                                summary: message.clone(),
+                                timestamp_ms: timestamp_ms(),
+                            },
+                        );
+                        Err(format!("[{action_id}] {message}"))
+                    }
+                }
+            }
+        }
+    }
+
     fn publish<R: Runtime>(&self, app: &AppHandle<R>, event: ActionEvent) {
         self.action_events.push(event.clone());
         let _ = app.emit("control-action", event);
     }
 
-    fn run_action<R, T, F>(
+    fn run_action_with_id<R, T, F>(
         &self,
         app: &AppHandle<R>,
         origin: ActionOrigin,
         operation: &str,
         label: &str,
+        action_id: String,
         operation_fn: F,
     ) -> Result<ActionResult<T>, String>
     where
@@ -334,7 +646,6 @@ impl AppControlService {
         T: Serialize,
         F: FnOnce() -> Result<T, String>,
     {
-        let action_id = self.next_action_id();
         self.publish(
             app,
             ActionEvent {
@@ -343,6 +654,7 @@ impl AppControlService {
                 operation: operation.into(),
                 stage: ActionStage::Started,
                 summary: format!("{}开始", label),
+                timestamp_ms: timestamp_ms(),
             },
         );
         match operation_fn() {
@@ -355,6 +667,7 @@ impl AppControlService {
                         operation: operation.into(),
                         stage: ActionStage::Finished,
                         summary: format!("{}完成", label),
+                        timestamp_ms: timestamp_ms(),
                     },
                 );
                 Ok(ActionResult {
@@ -372,6 +685,7 @@ impl AppControlService {
                         operation: operation.into(),
                         stage: ActionStage::Failed,
                         summary: format!("{}失败: {}", label, summarize_error(&error)),
+                        timestamp_ms: timestamp_ms(),
                     },
                 );
                 Err(format!("{} [{}]: {}", label, action_id, error))
@@ -423,6 +737,7 @@ mod tests {
     #[test]
     fn write_actions_publish_unique_started_and_finished_events() {
         let service = AppControlService::new();
+        service.set_permission_mode(PermissionMode::Full);
         let first = service.clear_received(app(), ActionOrigin::Ui).unwrap();
         let second = service.clear_received(app(), ActionOrigin::Mcp).unwrap();
         assert_ne!(first.action_id, second.action_id);
@@ -476,5 +791,115 @@ mod tests {
         assert!(!handle.is_finished());
         drop(first);
         assert!(handle.join().unwrap().contains("发送数据"));
+    }
+
+    fn test_config() -> ConnConfig {
+        ConnConfig::Serial(SerialConfig {
+            port: "/dev/does-not-open-in-this-test".into(),
+            baudrate: 115200,
+            ..SerialConfig::default()
+        })
+    }
+
+    fn wait_for_pending(service: &AppControlService) -> String {
+        for _ in 0..100 {
+            if let Some(approval) = service.pending_approvals().first() {
+                return approval.action_id.clone();
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("approval was not published");
+    }
+
+    #[test]
+    fn permission_defaults_to_ask() {
+        assert_eq!(
+            AppControlService::new().permission_mode(),
+            PermissionMode::Ask
+        );
+    }
+
+    #[test]
+    fn observe_rejects_mcp_writes_without_executing_them() {
+        let service = AppControlService::new();
+        service.set_permission_mode(PermissionMode::Observe);
+        let result = service.configure(test_config(), app(), ActionOrigin::Mcp);
+        assert!(result.unwrap_err().contains("observe"));
+        assert!(service.pending_approvals().is_empty());
+        assert!(service.snapshot().config.is_none());
+    }
+
+    #[test]
+    fn full_allows_mcp_write_without_waiting_for_approval() {
+        let service = AppControlService::new();
+        service.set_permission_mode(PermissionMode::Full);
+        let result = service
+            .configure(test_config(), app(), ActionOrigin::Mcp)
+            .unwrap();
+        assert!(result.action_id.starts_with("action-"));
+        assert_eq!(service.snapshot().config.unwrap().kind, "serial");
+    }
+
+    #[test]
+    fn approval_allow_executes_and_records_action_id() {
+        let service =
+            Arc::new(AppControlService::new().with_approval_timeout(Duration::from_secs(1)));
+        let worker = service.clone();
+        let handle =
+            std::thread::spawn(move || worker.configure(test_config(), app(), ActionOrigin::Mcp));
+        let action_id = wait_for_pending(&service);
+        service.approve_action(&action_id).unwrap();
+        let result = handle.join().unwrap().unwrap();
+        assert_eq!(result.action_id, action_id);
+        assert!(service
+            .action_events()
+            .iter()
+            .any(|event| event.action_id == action_id && event.stage == ActionStage::Approved));
+    }
+
+    #[test]
+    fn approval_deny_does_not_execute_and_rejects_replayed_decision() {
+        let service =
+            Arc::new(AppControlService::new().with_approval_timeout(Duration::from_secs(1)));
+        let worker = service.clone();
+        let handle =
+            std::thread::spawn(move || worker.configure(test_config(), app(), ActionOrigin::Mcp));
+        let action_id = wait_for_pending(&service);
+        service.deny_action(&action_id).unwrap();
+        assert!(service.deny_action(&action_id).is_err());
+        let error = handle.join().unwrap().unwrap_err();
+        assert!(error.contains(&action_id) && error.contains("拒绝"));
+        assert!(service.snapshot().config.is_none());
+    }
+
+    #[test]
+    fn approval_timeout_returns_error_with_action_id() {
+        let service =
+            Arc::new(AppControlService::new().with_approval_timeout(Duration::from_millis(10)));
+        let worker = service.clone();
+        let handle =
+            std::thread::spawn(move || worker.configure(test_config(), app(), ActionOrigin::Mcp));
+        let action_id = wait_for_pending(&service);
+        let error = handle.join().unwrap().unwrap_err();
+        assert!(error.contains(&action_id) && error.contains("超时"));
+        assert!(service.pending_approvals().is_empty());
+    }
+
+    #[test]
+    fn invalid_action_id_cannot_be_approved() {
+        let service = AppControlService::new();
+        assert!(service.approve_action("action-does-not-exist").is_err());
+    }
+
+    #[test]
+    fn shutdown_cancels_pending_approval_without_deadlock() {
+        let service =
+            Arc::new(AppControlService::new().with_approval_timeout(Duration::from_secs(60)));
+        let worker = service.clone();
+        let handle =
+            std::thread::spawn(move || worker.configure(test_config(), app(), ActionOrigin::Mcp));
+        let _ = wait_for_pending(&service);
+        service.cancel_pending_approvals();
+        assert!(handle.join().unwrap().unwrap_err().contains("关闭"));
     }
 }

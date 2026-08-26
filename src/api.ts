@@ -47,12 +47,34 @@ export interface StatusPayload {
   msg: string;
 }
 
+export type PermissionMode = "observe" | "ask" | "full";
+
+export interface PendingApproval {
+  action_id: string;
+  operation: string;
+  summary: string;
+  parameter_summary: string;
+  source: string;
+  expires_at_ms: number;
+}
+
 export const api = {
   listPorts: () => invoke<PortInfo[]>("list_ports"),
   connOpen: (cfg: ConnConfig) => invoke<void>("conn_open", { cfg }),
   connClose: () => invoke<void>("conn_close"),
   connSend: (data: number[]) => invoke<number>("conn_send", { data }),
   connClearReceived: () => invoke<void>("conn_clear_received"),
+  mcpEndpoint: () => invoke<string>("mcp_endpoint"),
+  mcpToken: () => invoke<string>("mcp_token"),
+  resetMcpToken: () => invoke<void>("reset_mcp_token"),
+  getPermissionMode: () => invoke<PermissionMode>("get_permission_mode"),
+  setPermissionMode: (mode: PermissionMode) =>
+    invoke<void>("set_permission_mode", { mode }),
+  listPendingApprovals: () => invoke<PendingApproval[]>("list_pending_approvals"),
+  approveMcpAction: (actionId: string) =>
+    invoke<void>("approve_mcp_action", { action_id: actionId }),
+  denyMcpAction: (actionId: string) =>
+    invoke<void>("deny_mcp_action", { action_id: actionId }),
   selectOutputFile: (kind: "log" | "templates" | "curve") =>
     invoke<string | null>("select_output_file", { kind }),
   writeUserFile: (path: string, text: string, truncate: boolean) =>

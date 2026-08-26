@@ -5,6 +5,7 @@ pub mod mcp;
 
 use conn::ConnConfig;
 use control::{events::ActionOrigin, AppControlService};
+use mcp::PermissionMode;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -294,6 +295,63 @@ fn conn_clear_received(
 }
 
 #[tauri::command]
+fn mcp_endpoint(server: tauri::State<'_, mcp::McpServerHandle>) -> String {
+    server.endpoint()
+}
+
+/// Explicit user-facing pairing action. The token is never emitted with app
+/// state or ordinary MCP activity events.
+#[tauri::command]
+fn mcp_token(server: tauri::State<'_, mcp::McpServerHandle>) -> String {
+    server.local_pairing_token()
+}
+
+#[tauri::command]
+fn reset_mcp_token(server: tauri::State<'_, mcp::McpServerHandle>) -> Result<(), String> {
+    server
+        .reset_local_pairing_token()
+        .map(|_| ())
+        .map_err(|error| format!("重置 MCP Token 失败: {error}"))
+}
+
+#[tauri::command]
+fn get_permission_mode(service: tauri::State<'_, Arc<AppControlService>>) -> PermissionMode {
+    service.permission_mode()
+}
+
+#[tauri::command]
+fn set_permission_mode(
+    service: tauri::State<'_, Arc<AppControlService>>,
+    mode: PermissionMode,
+) -> Result<(), String> {
+    service.set_permission_mode(mode);
+    Ok(())
+}
+
+#[tauri::command]
+fn list_pending_approvals(
+    service: tauri::State<'_, Arc<AppControlService>>,
+) -> Vec<control::events::PendingApprovalInfo> {
+    service.pending_approvals()
+}
+
+#[tauri::command]
+fn approve_mcp_action(
+    service: tauri::State<'_, Arc<AppControlService>>,
+    action_id: String,
+) -> Result<(), String> {
+    service.approve_action(&action_id)
+}
+
+#[tauri::command]
+fn deny_mcp_action(
+    service: tauri::State<'_, Arc<AppControlService>>,
+    action_id: String,
+) -> Result<(), String> {
+    service.deny_action(&action_id)
+}
+
+#[tauri::command]
 fn append_log_file(
     manager: tauri::State<'_, Arc<LogManager>>,
     path: String,
@@ -393,6 +451,14 @@ pub fn run() {
             conn_close,
             conn_send,
             conn_clear_received,
+            mcp_endpoint,
+            mcp_token,
+            reset_mcp_token,
+            get_permission_mode,
+            set_permission_mode,
+            list_pending_approvals,
+            approve_mcp_action,
+            deny_mcp_action,
             select_output_file,
             write_user_file,
             append_log_file,
@@ -419,6 +485,8 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<Arc<AppControlService>>()
+                    .cancel_pending_approvals();
                 app.state::<mcp::McpServerHandle>().shutdown();
             }
         });

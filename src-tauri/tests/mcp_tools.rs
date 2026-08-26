@@ -2,7 +2,7 @@ use serde_json::json;
 use serialporttool_lib::control::{AppControlService, ControlActionOrigin};
 use serialporttool_lib::mcp::server::dispatch_with_context;
 use serialporttool_lib::mcp::tools::{call_tool, AppToolControlContext, ToolControlContext};
-use serialporttool_lib::mcp::{McpServer, ToolErrorCode, MCP_PROTOCOL_VERSION};
+use serialporttool_lib::mcp::{McpServer, PermissionMode, ToolErrorCode, MCP_PROTOCOL_VERSION};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -51,6 +51,7 @@ fn http_tool_call(
 #[test]
 fn tools_call_uses_shared_control_service_and_mcp_action_origin() {
     let service = Arc::new(AppControlService::new());
+    service.set_permission_mode(PermissionMode::Full);
     let app = mock_app();
     let context = AppToolControlContext::new(service.clone(), app.clone());
     let request = json!({
@@ -84,6 +85,7 @@ fn tools_call_uses_shared_control_service_and_mcp_action_origin() {
 #[test]
 fn send_data_returns_tool_error_when_not_connected() {
     let service = AppControlService::new();
+    service.set_permission_mode(PermissionMode::Full);
     let app = mock_app();
     let result = call_tool(
         &service,
@@ -100,6 +102,7 @@ fn send_data_returns_tool_error_when_not_connected() {
 #[test]
 fn read_and_clear_use_the_same_bounded_receive_buffer() {
     let service = AppControlService::new();
+    service.set_permission_mode(PermissionMode::Full);
     let app = mock_app();
     service
         .rx_buffer()
@@ -179,6 +182,7 @@ fn configure_connect_send_and_read_complete_a_real_tcp_loopback() {
     });
 
     let service = Arc::new(AppControlService::new());
+    service.set_permission_mode(PermissionMode::Full);
     let app = mock_app();
     let configured = call_tool(
         &service,
