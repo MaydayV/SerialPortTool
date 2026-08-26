@@ -1,5 +1,6 @@
 // SerialPortTool - 串口助手 Tauri 后端入口
 pub mod conn;
+pub mod mcp;
 
 use conn::{ConnConfig, ConnManager};
 use serde::Serialize;
