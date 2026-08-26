@@ -35,7 +35,6 @@
   },
   "bundle": {
     "active": true,
-    "externalBin": ["binaries/serialporttool-mcp"],
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "跨平台串口调试助手：串口/TCP/UDP 收发、协议编解码、波形图",

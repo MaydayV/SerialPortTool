@@ -12,7 +12,7 @@
     "appstore:build": "node scripts/macos-app-store.mjs",
     "appstore:upload": "node scripts/macos-app-store.mjs --upload",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
