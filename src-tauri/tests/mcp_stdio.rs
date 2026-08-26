@@ -172,3 +172,13 @@ fn gui_ipc_shutdown_is_bounded_with_a_slow_client() {
     drop(client);
     assert!(!socket.exists());
 }
+
+#[test]
+fn ipc_does_not_delete_a_non_socket_endpoint() {
+    let socket = endpoint("regular-file");
+    std::fs::write(&socket, b"keep this file").unwrap();
+    let result = LocalIpcServer::start(&socket, Arc::new(NoopControl));
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&socket).unwrap(), b"keep this file");
+    std::fs::remove_file(socket).unwrap();
+}

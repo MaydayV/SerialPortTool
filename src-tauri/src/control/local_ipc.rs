@@ -399,6 +399,7 @@ fn json_rpc_error(id: Option<Value>, code: i32, message: &str) -> Value {
 mod platform {
     use super::*;
     use std::fs;
+    use std::os::unix::fs::FileTypeExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
 
@@ -425,7 +426,13 @@ mod platform {
         if let Some(parent) = endpoint.parent() {
             fs::create_dir_all(parent)?;
         }
-        if endpoint.exists() {
+        if let Ok(metadata) = fs::symlink_metadata(&endpoint) {
+            if !metadata.file_type().is_socket() {
+                return Err(LocalIpcError::Io(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    "IPC endpoint exists and is not a Unix socket",
+                )));
+            }
             match UnixStream::connect(&endpoint) {
                 Ok(_) => {
                     return Err(LocalIpcError::Io(io::Error::new(
