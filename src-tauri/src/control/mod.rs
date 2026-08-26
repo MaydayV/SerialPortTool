@@ -1,6 +1,7 @@
 //! Typed application control façade shared by Tauri commands and future MCP tools.
 
 pub mod events;
+pub mod local_ipc;
 pub mod state;
 
 use crate::conn::{ConnConfig, ConnManager, RxObserver, StatusObserver};

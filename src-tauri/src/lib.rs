@@ -482,6 +482,20 @@ pub fn run() {
                 .start()
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
             app.manage(mcp_handle);
+            let local_control: Arc<dyn mcp::ToolControlContext> = Arc::new(
+                mcp::AppToolControlContext::new(control_service.clone(), app.handle().clone()),
+            );
+            match control::local_ipc::LocalIpcServer::start(
+                control::local_ipc::default_endpoint(),
+                local_control,
+            ) {
+                Ok(local_ipc) => {
+                    app.manage(local_ipc);
+                }
+                Err(error) => {
+                    eprintln!("serialporttool local MCP IPC unavailable: {error}");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -497,6 +511,10 @@ pub fn run() {
                 app.state::<Arc<AppControlService>>()
                     .cancel_pending_approvals();
                 app.state::<mcp::McpServerHandle>().shutdown();
+                if let Some(local_ipc) = app.try_state::<control::local_ipc::LocalIpcServerHandle>()
+                {
+                    local_ipc.shutdown();
+                }
             }
         });
 }
