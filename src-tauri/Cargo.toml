@@ -1,6 +1,6 @@
 [package]
 name = "serialporttool"
-version = "0.1.3"
+version = "0.1.4"
 description = "跨平台串口、TCP/UDP 调试与协议分析工具"
 authors = ["SerialPortTool contributors"]
 edition = "2021"
