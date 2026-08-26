@@ -3,10 +3,12 @@ pub mod serial;
 pub mod tcp_udp;
 
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Runtime};
 
-pub use serial::{SerialConfig, SerialConn};
+pub use serial::{
+    emit_rx_observed, RxObserver, RxPayload, SerialConfig, SerialConn, StatusObserver,
+};
 pub use tcp_udp::{TcpUdpConfig, TcpUdpConn};
 
 /// 当前活动的连接（单连接模型）
@@ -26,6 +28,9 @@ pub enum ConnConfig {
 pub struct ConnManager {
     pub conn: Mutex<Option<ActiveConn>>,
     lifecycle: Mutex<()>,
+    send_queue: Arc<Mutex<()>>,
+    rx_observer: Mutex<Option<RxObserver>>,
+    status_observer: Mutex<Option<StatusObserver>>,
 }
 
 impl Default for ConnManager {
@@ -39,6 +44,9 @@ impl ConnManager {
         Self {
             conn: Mutex::new(None),
             lifecycle: Mutex::new(()),
+            send_queue: Arc::new(Mutex::new(())),
+            rx_observer: Mutex::new(None),
+            status_observer: Mutex::new(None),
         }
     }
 
@@ -53,18 +61,43 @@ impl ConnManager {
 
     /// 打开连接（替换旧连接）
     pub fn open<R: Runtime>(&self, cfg: ConnConfig, app: AppHandle<R>) -> Result<(), String> {
+        let rx_observer = self.rx_observer.lock().unwrap().clone();
+        let status_observer = self.status_observer.lock().unwrap().clone();
+        self.open_with_observers(cfg, app, rx_observer, status_observer)
+    }
+
+    pub fn set_observers(
+        &self,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) {
+        *self.rx_observer.lock().unwrap() = rx_observer;
+        *self.status_observer.lock().unwrap() = status_observer;
+    }
+
+    pub fn send_queue_lock(&self) -> Arc<Mutex<()>> {
+        self.send_queue.clone()
+    }
+
+    pub fn open_with_observers<R: Runtime>(
+        &self,
+        cfg: ConnConfig,
+        app: AppHandle<R>,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) -> Result<(), String> {
         let _operation = self.lifecycle.lock().unwrap();
         // 先关闭旧连接
         self.close_inner();
         let new_conn = match cfg {
             ConnConfig::Serial(cfg) => {
                 let mut c = SerialConn::new(cfg);
-                c.open(app)?;
+                c.open_with_observers(app, rx_observer.clone(), status_observer.clone())?;
                 ActiveConn::Serial(c)
             }
             ConnConfig::TcpUdp(cfg) => {
                 let mut c = TcpUdpConn::new(cfg);
-                c.open(app)?;
+                c.open_with_observer(app, rx_observer, status_observer)?;
                 ActiveConn::TcpUdp(c)
             }
         };
@@ -102,6 +135,12 @@ impl ConnManager {
                 ActiveConn::TcpUdp(mut c) => c.close(),
             }
         }
+    }
+}
+
+impl Drop for ConnManager {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 

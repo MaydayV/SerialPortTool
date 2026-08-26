@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tauri::{AppHandle, Runtime};
 
-use super::serial::{emit_rx, emit_rx_from, emit_status};
+use super::serial::{emit_rx_observed, emit_status_observed, RxObserver, StatusObserver};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct TcpUdpConfig {
@@ -149,17 +149,31 @@ impl TcpUdpConn {
     }
 
     pub fn open<R: Runtime>(&mut self, app: AppHandle<R>) -> Result<(), String> {
+        self.open_with_observer(app, None, None)
+    }
+
+    pub fn open_with_observer<R: Runtime>(
+        &mut self,
+        app: AppHandle<R>,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) -> Result<(), String> {
         self.stop.store(false, Ordering::SeqCst);
         match (self.protocol.as_str(), self.mode.as_str()) {
-            ("tcp", "client") => self.open_tcp_client(app)?,
-            ("tcp", "server") => self.open_tcp_server(app)?,
-            ("udp", "client" | "server") => self.open_udp(app)?,
+            ("tcp", "client") => self.open_tcp_client(app, rx_observer, status_observer)?,
+            ("tcp", "server") => self.open_tcp_server(app, rx_observer, status_observer)?,
+            ("udp", "client" | "server") => self.open_udp(app, rx_observer, status_observer)?,
             _ => return Err("不支持的连接类型".into()),
         }
         Ok(())
     }
 
-    fn open_tcp_client<R: Runtime>(&mut self, app: AppHandle<R>) -> Result<(), String> {
+    fn open_tcp_client<R: Runtime>(
+        &mut self,
+        app: AppHandle<R>,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) -> Result<(), String> {
         let (host, port) = Self::parse_target(&self.target, 80)?;
         let addr = socket_addr_string(&host, port);
         let stream = connect_tcp(&addr).map_err(|e| format!("连接 {} 失败: {}", addr, e))?;
@@ -170,16 +184,22 @@ impl TcpUdpConn {
             .unwrap_or_default();
         self.sock.lock().unwrap().replace(ConnSock::Tcp(stream));
         self.connected.store(true, Ordering::SeqCst);
-        emit_status(
+        emit_status_observed(
             &app,
             "connected",
             format!("已连接 {} (本地 {})", addr, local),
+            status_observer.as_ref(),
         );
-        self.spawn_tcp_client_rx(app.clone());
+        self.spawn_tcp_client_rx(app.clone(), rx_observer, status_observer);
         Ok(())
     }
 
-    fn open_tcp_server<R: Runtime>(&mut self, app: AppHandle<R>) -> Result<(), String> {
+    fn open_tcp_server<R: Runtime>(
+        &mut self,
+        app: AppHandle<R>,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) -> Result<(), String> {
         let ipv6_addr = format!("[::]:{}", self.port);
         let (listener, bind_addr) = match TcpListener::bind(&ipv6_addr) {
             Ok(listener) => (listener, ipv6_addr),
@@ -197,10 +217,11 @@ impl TcpUdpConn {
             .unwrap_or(bind_addr);
         self.listener.lock().unwrap().replace(listener);
         self.connected.store(true, Ordering::SeqCst);
-        emit_status(
+        emit_status_observed(
             &app,
             "connected",
             format!("TCP Server 监听 {}", actual_addr),
+            status_observer.as_ref(),
         );
 
         let listener = self.listener.clone();
@@ -210,6 +231,8 @@ impl TcpUdpConn {
         let workers = self.worker_threads.clone();
         let client_seq = self.client_seq.clone();
         let app2 = app.clone();
+        let rx_observer = rx_observer.clone();
+        let status_observer = status_observer.clone();
         self.threads.push(std::thread::spawn(move || {
             loop {
                 if stop.load(Ordering::SeqCst) {
@@ -223,10 +246,11 @@ impl TcpUdpConn {
                             Ok(pair) => Some(pair),
                             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
                             Err(error) => {
-                                emit_status(
+                                emit_status_observed(
                                     &app2,
                                     "lose",
                                     format!("TCP Server 监听失败: {}", error),
+                                    status_observer.as_ref(),
                                 );
                                 break;
                             }
@@ -243,20 +267,22 @@ impl TcpUdpConn {
                 };
 
                 if let Err(error) = configure_tcp(&stream) {
-                    emit_status(
+                    emit_status_observed(
                         &app2,
                         "lose",
                         format!("客户端 {} 设置失败: {}", addr, error),
+                        status_observer.as_ref(),
                     );
                     continue;
                 }
                 let read_stream = match stream.try_clone() {
                     Ok(read_stream) => read_stream,
                     Err(error) => {
-                        emit_status(
+                        emit_status_observed(
                             &app2,
                             "lose",
                             format!("客户端 {} 初始化失败: {}", addr, error),
+                            status_observer.as_ref(),
                         );
                         continue;
                     }
@@ -267,15 +293,18 @@ impl TcpUdpConn {
                     guard.insert(addr, (client_id, stream));
                     guard.len()
                 };
-                emit_status(
+                emit_status_observed(
                     &app2,
                     "connected",
                     format!("客户端 {} 接入 (共 {})", addr, client_count),
+                    status_observer.as_ref(),
                 );
 
                 let clients2 = clients.clone();
                 let stop2 = stop.clone();
                 let app3 = app2.clone();
+                let rx_observer3 = rx_observer.clone();
+                let status_observer3 = status_observer.clone();
                 workers.lock().unwrap().push(std::thread::spawn(move || {
                     let mut stream = read_stream;
                     let mut buf = vec![0u8; 64 * 1024];
@@ -286,10 +315,11 @@ impl TcpUdpConn {
                                 closed = true;
                                 break;
                             }
-                            Ok(n) => emit_rx_from(
+                            Ok(n) => emit_rx_observed(
                                 &app3,
                                 &buf[..n],
                                 Some(format!("{}#{}", addr, client_id)),
+                                rx_observer3.as_ref(),
                             ),
                             Err(ref error)
                                 if error.kind() == std::io::ErrorKind::WouldBlock
@@ -308,23 +338,34 @@ impl TcpUdpConn {
                         guard.len()
                     };
                     if closed && !stop2.load(Ordering::SeqCst) {
-                        emit_status(
+                        emit_status_observed(
                             &app3,
                             "connected",
                             format!("客户端 {} 断开 (剩 {})", addr, remain),
+                            status_observer3.as_ref(),
                         );
                     }
                 }));
             }
             if !stop.load(Ordering::SeqCst) {
                 connected.store(false, Ordering::SeqCst);
-                emit_status(&app2, "closed", "TCP Server 已停止监听".to_string());
+                emit_status_observed(
+                    &app2,
+                    "closed",
+                    "TCP Server 已停止监听".to_string(),
+                    status_observer.as_ref(),
+                );
             }
         }));
         Ok(())
     }
 
-    fn open_udp<R: Runtime>(&mut self, app: AppHandle<R>) -> Result<(), String> {
+    fn open_udp<R: Runtime>(
+        &mut self,
+        app: AppHandle<R>,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) -> Result<(), String> {
         let target_addr = if self.mode == "client" && !self.target.trim().is_empty() {
             let (host, port) = Self::parse_target(&self.target, 0)?;
             if port == 0 {
@@ -373,7 +414,7 @@ impl TcpUdpConn {
         self.sock.lock().unwrap().replace(ConnSock::Udp(sock));
         self.target_addr = target_addr;
         self.connected.store(true, Ordering::SeqCst);
-        emit_status(
+        emit_status_observed(
             &app,
             "connected",
             format!(
@@ -385,12 +426,18 @@ impl TcpUdpConn {
                     "等待发送方".into()
                 }
             ),
+            status_observer.as_ref(),
         );
-        self.spawn_udp_rx(app);
+        self.spawn_udp_rx(app, rx_observer, status_observer);
         Ok(())
     }
 
-    fn spawn_tcp_client_rx<R: Runtime>(&mut self, app: AppHandle<R>) {
+    fn spawn_tcp_client_rx<R: Runtime>(
+        &mut self,
+        app: AppHandle<R>,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) {
         let sock = self.sock.clone();
         let stop = self.stop.clone();
         let connected = self.connected.clone();
@@ -420,14 +467,32 @@ impl TcpUdpConn {
                         if stop.load(Ordering::SeqCst) {
                             break;
                         }
-                        emit_status(&app, "lose", format!("{} 连接断开", target));
+                        emit_status_observed(
+                            &app,
+                            "lose",
+                            format!("{} 连接断开", target),
+                            status_observer.as_ref(),
+                        );
                         if !auto_reconnect {
-                            emit_status(&app, "closed", "连接已关闭".to_string());
+                            emit_status_observed(
+                                &app,
+                                "closed",
+                                "连接已关闭".to_string(),
+                                status_observer.as_ref(),
+                            );
                             break;
                         }
-                        reconnect_tcp(&sock, &stop, &connected, &app, &target, interval);
+                        reconnect_tcp(
+                            &sock,
+                            &stop,
+                            &connected,
+                            &app,
+                            &target,
+                            interval,
+                            status_observer.as_ref(),
+                        );
                     }
-                    Ok(n) => emit_rx(&app, &buf[..n]),
+                    Ok(n) => emit_rx_observed(&app, &buf[..n], None, rx_observer.as_ref()),
                     Err(ref error)
                         if error.kind() == std::io::ErrorKind::WouldBlock
                             || error.kind() == std::io::ErrorKind::TimedOut => {}
@@ -437,23 +502,51 @@ impl TcpUdpConn {
                         if stop.load(Ordering::SeqCst) {
                             break;
                         }
-                        emit_status(&app, "lose", format!("{} 连接错误: {}", target, error));
+                        emit_status_observed(
+                            &app,
+                            "lose",
+                            format!("{} 连接错误: {}", target, error),
+                            status_observer.as_ref(),
+                        );
                         if !auto_reconnect {
-                            emit_status(&app, "closed", "连接已关闭".to_string());
+                            emit_status_observed(
+                                &app,
+                                "closed",
+                                "连接已关闭".to_string(),
+                                status_observer.as_ref(),
+                            );
                             break;
                         }
-                        reconnect_tcp(&sock, &stop, &connected, &app, &target, interval);
+                        reconnect_tcp(
+                            &sock,
+                            &stop,
+                            &connected,
+                            &app,
+                            &target,
+                            interval,
+                            status_observer.as_ref(),
+                        );
                     }
                 }
             }
             connected.store(false, Ordering::SeqCst);
             if stop.load(Ordering::SeqCst) {
-                emit_status(&app, "closed", "连接已关闭".to_string());
+                emit_status_observed(
+                    &app,
+                    "closed",
+                    "连接已关闭".to_string(),
+                    status_observer.as_ref(),
+                );
             }
         }));
     }
 
-    fn spawn_udp_rx<R: Runtime>(&mut self, app: AppHandle<R>) {
+    fn spawn_udp_rx<R: Runtime>(
+        &mut self,
+        app: AppHandle<R>,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) {
         let sock = self.sock.clone();
         let stop = self.stop.clone();
         let last_sender = self.last_sender.clone();
@@ -482,14 +575,29 @@ impl TcpUdpConn {
                 match received {
                     Ok(Some((n, sender))) => {
                         *last_sender.lock().unwrap() = Some(sender);
-                        emit_rx_from(&app, &buf[..n], Some(sender.to_string()));
+                        emit_rx_observed(
+                            &app,
+                            &buf[..n],
+                            Some(sender.to_string()),
+                            rx_observer.as_ref(),
+                        );
                     }
                     Ok(None) => std::thread::sleep(Duration::from_millis(10)),
                     Err(error) => {
                         connected.store(false, Ordering::SeqCst);
                         if !stop.load(Ordering::SeqCst) {
-                            emit_status(&app, "lose", format!("UDP 接收失败: {}", error));
-                            emit_status(&app, "closed", "UDP 已关闭".to_string());
+                            emit_status_observed(
+                                &app,
+                                "lose",
+                                format!("UDP 接收失败: {}", error),
+                                status_observer.as_ref(),
+                            );
+                            emit_status_observed(
+                                &app,
+                                "closed",
+                                "UDP 已关闭".to_string(),
+                                status_observer.as_ref(),
+                            );
                         }
                         break;
                     }
@@ -655,11 +763,13 @@ fn reconnect_tcp<R: Runtime>(
     app: &AppHandle<R>,
     target: &str,
     interval: Duration,
+    status_observer: Option<&StatusObserver>,
 ) {
-    emit_status(
+    emit_status_observed(
         app,
         "connecting",
         format!("{} 断开，{}ms 后重连...", target, interval.as_millis()),
+        status_observer,
     );
     while !stop.load(Ordering::SeqCst) {
         if sleep_until(stop, interval) {
@@ -673,12 +783,27 @@ fn reconnect_tcp<R: Runtime>(
                     }
                     sock.lock().unwrap().replace(ConnSock::Tcp(stream));
                     connected.store(true, Ordering::SeqCst);
-                    emit_status(app, "connected", format!("重连成功 {}", target));
+                    emit_status_observed(
+                        app,
+                        "connected",
+                        format!("重连成功 {}", target),
+                        status_observer,
+                    );
                     return;
                 }
-                Err(error) => emit_status(app, "connecting", format!("重连设置失败: {}", error)),
+                Err(error) => emit_status_observed(
+                    app,
+                    "connecting",
+                    format!("重连设置失败: {}", error),
+                    status_observer,
+                ),
             },
-            Err(error) => emit_status(app, "connecting", format!("重连失败: {}", error)),
+            Err(error) => emit_status_observed(
+                app,
+                "connecting",
+                format!("重连失败: {}", error),
+                status_observer,
+            ),
         }
     }
 }

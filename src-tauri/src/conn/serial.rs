@@ -7,6 +7,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 
+pub type RxObserver = Arc<dyn Fn(RxPayload) + Send + Sync + 'static>;
+pub type StatusObserver = Arc<dyn Fn(&str, &str) + Send + Sync + 'static>;
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SerialConfig {
     pub port: String,
@@ -61,17 +64,36 @@ impl SerialConn {
 
     /// 打开串口并启动接收线程（调用方保证 UI 线程）
     pub fn open<R: Runtime>(&mut self, app: AppHandle<R>) -> Result<(), String> {
+        self.open_with_observers(app, None, None)
+    }
+
+    pub fn open_with_observers<R: Runtime>(
+        &mut self,
+        app: AppHandle<R>,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) -> Result<(), String> {
         self.stop.store(false, Ordering::SeqCst);
         let port = build_port(&self.cfg)?;
         self.port.lock().unwrap().replace(port);
         self.connected.store(true, Ordering::SeqCst);
-        emit_status(&app, "connected", format!("已连接 {}", self.cfg.port));
-        self.spawn_rx_thread(app);
+        emit_status_observed(
+            &app,
+            "connected",
+            format!("已连接 {}", self.cfg.port),
+            status_observer.as_ref(),
+        );
+        self.spawn_rx_thread(app, rx_observer, status_observer);
         Ok(())
     }
 
     /// 接收线程同时负责断线检测和串口重连，避免多个线程竞争端口锁。
-    fn spawn_rx_thread<R: Runtime>(&mut self, app: AppHandle<R>) {
+    fn spawn_rx_thread<R: Runtime>(
+        &mut self,
+        app: AppHandle<R>,
+        rx_observer: Option<RxObserver>,
+        status_observer: Option<StatusObserver>,
+    ) {
         let port = self.port.clone();
         let stop = self.stop.clone();
         let connected = self.connected.clone();
@@ -97,19 +119,19 @@ impl SerialConn {
                     Ok(n) if n > 0 => {
                         frame.extend_from_slice(&buf[..n]);
                         if frame.len() >= 64 * 1024 {
-                            emit_rx(&app, &frame);
+                            emit_rx_observed(&app, &frame, None, rx_observer.as_ref());
                             frame.clear();
                         }
                     }
                     Ok(_) => {
                         if !frame.is_empty() {
-                            emit_rx(&app, &frame);
+                            emit_rx_observed(&app, &frame, None, rx_observer.as_ref());
                             frame.clear();
                         }
                     }
                     Err(e) if is_timeout(&e) => {
                         if !frame.is_empty() {
-                            emit_rx(&app, &frame);
+                            emit_rx_observed(&app, &frame, None, rx_observer.as_ref());
                             frame.clear();
                         }
                     }
@@ -123,13 +145,28 @@ impl SerialConn {
                             break;
                         }
 
-                        emit_status(&app, "lose", format!("连接断开: {}", message));
+                        emit_status_observed(
+                            &app,
+                            "lose",
+                            format!("连接断开: {}", message),
+                            status_observer.as_ref(),
+                        );
                         if !auto_reconnect {
-                            emit_status(&app, "closed", "连接已关闭".to_string());
+                            emit_status_observed(
+                                &app,
+                                "closed",
+                                "连接已关闭".to_string(),
+                                status_observer.as_ref(),
+                            );
                             break;
                         }
 
-                        emit_status(&app, "connecting", "掉线，尝试重连...".to_string());
+                        emit_status_observed(
+                            &app,
+                            "connecting",
+                            "掉线，尝试重连...".to_string(),
+                            status_observer.as_ref(),
+                        );
                         while !stop.load(Ordering::SeqCst) {
                             if sleep_until(&stop, Duration::from_millis(1000)) {
                                 break;
@@ -141,18 +178,20 @@ impl SerialConn {
                                     }
                                     port.lock().unwrap().replace(new_port);
                                     connected.store(true, Ordering::SeqCst);
-                                    emit_status(
+                                    emit_status_observed(
                                         &app,
                                         "connected",
                                         format!("重连成功 {}", cfg.port),
+                                        status_observer.as_ref(),
                                     );
                                     break;
                                 }
                                 Err(reconnect_error) => {
-                                    emit_status(
+                                    emit_status_observed(
                                         &app,
                                         "connecting",
                                         format!("重连失败: {}", reconnect_error),
+                                        status_observer.as_ref(),
                                     );
                                 }
                             }
@@ -163,7 +202,12 @@ impl SerialConn {
 
             connected.store(false, Ordering::SeqCst);
             if stop.load(Ordering::SeqCst) {
-                emit_status(&app, "closed", "连接已关闭".to_string());
+                emit_status_observed(
+                    &app,
+                    "closed",
+                    "连接已关闭".to_string(),
+                    status_observer.as_ref(),
+                );
             }
         }));
     }
@@ -246,7 +290,7 @@ fn sleep_until(stop: &AtomicBool, duration: Duration) -> bool {
     stop.load(Ordering::SeqCst)
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RxPayload {
     pub data: Vec<u8>,
     pub ts: f64,
@@ -274,6 +318,28 @@ pub fn emit_rx_from<R: Runtime>(app: &AppHandle<R>, data: &[u8], peer: Option<St
     );
 }
 
+pub fn emit_rx_observed<R: Runtime>(
+    app: &AppHandle<R>,
+    data: &[u8],
+    peer: Option<String>,
+    observer: Option<&RxObserver>,
+) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+        * 1000.0;
+    let payload = RxPayload {
+        data: data.to_vec(),
+        ts,
+        peer,
+    };
+    if let Some(observer) = observer {
+        observer(payload.clone());
+    }
+    let _ = app.emit("rx-data", payload);
+}
+
 #[derive(Serialize, Clone)]
 pub struct StatusPayload {
     pub status: String, // connected/closed/lose/connecting
@@ -288,6 +354,18 @@ pub fn emit_status<R: Runtime>(app: &AppHandle<R>, status: &str, msg: String) {
             msg,
         },
     );
+}
+
+pub fn emit_status_observed<R: Runtime>(
+    app: &AppHandle<R>,
+    status: &str,
+    msg: String,
+    observer: Option<&StatusObserver>,
+) {
+    if let Some(observer) = observer {
+        observer(status, &msg);
+    }
+    emit_status(app, status, msg);
 }
 
 #[cfg(test)]

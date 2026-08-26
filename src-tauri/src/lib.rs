@@ -1,8 +1,10 @@
 // SerialPortTool - 串口助手 Tauri 后端入口
 pub mod conn;
+pub mod control;
 pub mod mcp;
 
-use conn::{ConnConfig, ConnManager};
+use conn::ConnConfig;
+use control::{events::ActionOrigin, AppControlService};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -14,7 +16,6 @@ use tauri_plugin_dialog::DialogExt;
 
 const LOG_BUFFER_CAPACITY: usize = 64 * 1024;
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
-const MAX_SEND_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LOG_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EXPORT_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_LOG_PATH_BYTES: usize = 4096;
@@ -252,27 +253,32 @@ fn list_ports() -> Result<Vec<PortInfo>, String> {
 /// 打开连接（串口 / TCP / UDP）
 #[tauri::command]
 fn conn_open(
-    manager: tauri::State<'_, ConnManager>,
+    service: tauri::State<'_, AppControlService>,
     app: tauri::AppHandle,
     cfg: ConnConfig,
 ) -> Result<(), String> {
-    manager.open(cfg, app)
+    service.open(cfg, app, ActionOrigin::Ui).map(|_| ())
 }
 
 /// 关闭连接
 #[tauri::command]
-fn conn_close(manager: tauri::State<'_, ConnManager>) -> Result<(), String> {
-    manager.close();
-    Ok(())
+fn conn_close(
+    service: tauri::State<'_, AppControlService>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    service.close(app, ActionOrigin::Ui).map(|_| ())
 }
 
 /// 发送数据（接收 bytes 数组）
 #[tauri::command]
-fn conn_send(manager: tauri::State<'_, ConnManager>, data: Vec<u8>) -> Result<usize, String> {
-    if data.len() > MAX_SEND_BYTES {
-        return Err("单次发送不能超过 4 MiB".into());
-    }
-    manager.send(&data)
+fn conn_send(
+    service: tauri::State<'_, AppControlService>,
+    app: tauri::AppHandle,
+    data: Vec<u8>,
+) -> Result<usize, String> {
+    service
+        .send(data, app, ActionOrigin::Ui)
+        .map(|action| action.result)
 }
 
 #[tauri::command]
@@ -366,7 +372,7 @@ pub fn run() {
     });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(ConnManager::new())
+        .manage(AppControlService::new())
         .manage(log_manager)
         .invoke_handler(tauri::generate_handler![
             list_ports,
