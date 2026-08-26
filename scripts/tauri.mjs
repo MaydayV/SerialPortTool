@@ -23,7 +23,11 @@ if (wantsDmg) {
     buildArgs.push("--bundles", "app");
   }
 }
-const result = spawnSync(tauriCommand, buildArgs, { env, stdio: "inherit", shell: false });
+const result = spawnSync(tauriCommand, buildArgs, {
+  env,
+  stdio: "inherit",
+  shell: process.platform === "win32",
+});
 if (result.error) throw result.error;
 if (result.status === 0 && process.platform === "darwin" && wantsDmg) {
   const packageResult = spawnSync(process.execPath, ["scripts/package_macos_dmg.mjs"], {
