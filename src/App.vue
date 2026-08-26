@@ -17,7 +17,7 @@ import { useConnStore } from "./stores/conn";
 import { useRxStore } from "./stores/rx";
 import { useTxStore } from "./stores/tx";
 import { useGraphStore } from "./stores/graph";
-import { loadConfig, initPersistence } from "./stores/persist";
+import { clearConfig, loadConfig, initPersistence } from "./stores/persist";
 import { formatTime } from "./utils/bytes";
 import { saveTextFile } from "./utils/save";
 import { api } from "./api";
@@ -159,7 +159,7 @@ function onSplitterKeydown(e: KeyboardEvent) {
 /** 重置全部配置并刷新 */
 function resetAll() {
   if (confirm("确定恢复默认设置？所有配置（连接参数、模板、历史）将被清除。")) {
-    localStorage.removeItem("serialaid.config.v1");
+    clearConfig();
     location.reload();
   }
 }
@@ -187,7 +187,7 @@ async function exportLog() {
     await saveTextFile(
       "log",
       "\ufeff" + lines.join("\n"),
-      `serialaid-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.log`,
+      `serialporttool-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.log`,
       "text/plain;charset=utf-8"
     );
   } catch (error) {

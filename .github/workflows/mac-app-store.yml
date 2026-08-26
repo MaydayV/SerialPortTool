@@ -72,7 +72,7 @@ jobs:
           : "${APP_STORE_CONNECT_API_KEY_BASE64:?missing APP_STORE_CONNECT_API_KEY_BASE64}"
 
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
-          KEYCHAIN_PATH="${RUNNER_TEMP}/serialaid-appstore.keychain-db"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/serialporttool-appstore.keychain-db"
           APP_CERT_PATH="${RUNNER_TEMP}/app-distribution.p12"
           INSTALLER_CERT_PATH="${RUNNER_TEMP}/installer-distribution.p12"
           PROFILE_PATH="${RUNNER_TEMP}/SerialPortTool.provisionprofile"

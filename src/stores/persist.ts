@@ -7,7 +7,8 @@ import { useProtocolStore } from "./protocol";
 import { useGraphStore } from "./graph";
 import type { SerialConfig, TcpUdpConfig } from "../api";
 
-const KEY = "serialaid.config.v1";
+const KEY = "serialporttool.config.v1";
+const LEGACY_KEY = "serialaid.config.v1";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -165,9 +166,19 @@ export function saveConfig(theme: string) {
   }
 }
 
+export function clearConfig() {
+  localStorage.removeItem(KEY);
+  localStorage.removeItem(LEGACY_KEY);
+}
+
 export function loadConfig(themeRef: { value: "light" | "dark" | "system" }) {
   try {
-    const raw = localStorage.getItem(KEY);
+    let raw = localStorage.getItem(KEY);
+    let migratedFromLegacy = false;
+    if (!raw) {
+      raw = localStorage.getItem(LEGACY_KEY);
+      migratedFromLegacy = raw !== null;
+    }
     if (!raw) return;
     const d = JSON.parse(raw) as Persisted;
     const conn = useConnStore();
@@ -249,6 +260,11 @@ export function loadConfig(themeRef: { value: "light" | "dark" | "system" }) {
     }
     if (d.theme === "light" || d.theme === "dark" || d.theme === "system") {
       themeRef.value = d.theme;
+    }
+    if (migratedFromLegacy) {
+      // 先写入新 key，再删除旧 key，避免迁移过程中丢失用户配置。
+      localStorage.setItem(KEY, raw);
+      localStorage.removeItem(LEGACY_KEY);
     }
   } catch (e) {
     console.warn("config load failed", e);

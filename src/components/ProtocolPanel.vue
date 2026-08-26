@@ -85,7 +85,7 @@ async function exportTemplates() {
     await saveTextFile(
       "templates",
       store.exportTemplates(),
-      "serialaid-templates.json",
+      "serialporttool-templates.json",
       "application/json"
     );
   } catch (error) {

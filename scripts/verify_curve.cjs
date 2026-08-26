@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 async function main() {
-  const bundlePath = path.join(os.tmpdir(), "serial-aid-curve-bundle.cjs");
+  const bundlePath = path.join(os.tmpdir(), "serialporttool-curve-bundle.cjs");
   await esbuild.build({
     entryPoints: ["src/utils/curve.ts"],
     bundle: true,

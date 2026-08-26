@@ -1,5 +1,5 @@
 // 端到端集成测试：ConnManager → TCP client/server/UDP 收发环回
-use serial_aid_lib::conn::{ConnConfig, ConnManager, TcpUdpConfig};
+use serialporttool_lib::conn::{ConnConfig, ConnManager, TcpUdpConfig};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};

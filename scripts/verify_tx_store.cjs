@@ -5,7 +5,7 @@ const path = require("path");
 const Module = require("module");
 
 async function main() {
-  const bundlePath = path.join(os.tmpdir(), "serial-aid-tx-store-bundle.cjs");
+  const bundlePath = path.join(os.tmpdir(), "serialporttool-tx-store-bundle.cjs");
   await esbuild.build({
     entryPoints: ["scripts/tx_test_entry.ts"],
     bundle: true,

@@ -4,7 +4,7 @@ const os = require("os");
 const path = require("path");
 
 async function main() {
-  const bundlePath = path.join(os.tmpdir(), "serial-aid-graph-store-bundle.cjs");
+  const bundlePath = path.join(os.tmpdir(), "serialporttool-graph-store-bundle.cjs");
   await esbuild.build({
     entryPoints: ["src/stores/graph.ts"],
     bundle: true,

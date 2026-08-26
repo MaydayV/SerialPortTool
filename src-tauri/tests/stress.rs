@@ -1,5 +1,5 @@
 // 高频压测：验证接收线程 + 事件推送在高吞吐下不崩溃、不丢帧
-use serial_aid_lib::conn::{ConnConfig, ConnManager, TcpUdpConfig};
+use serialporttool_lib::conn::{ConnConfig, ConnManager, TcpUdpConfig};
 use std::io::Write;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};

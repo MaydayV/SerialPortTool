@@ -1,4 +1,4 @@
-# 生成 SerialAid 应用图标（macOS icns + Windows ico + png 各尺寸）
+# 生成 SerialPortTool 应用图标（macOS icns + Windows ico + png 各尺寸）
 # 风格：深蓝渐变圆角方块 + 白色串口连接节点图案
 from PIL import Image, ImageDraw
 from pathlib import Path

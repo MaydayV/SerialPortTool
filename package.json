@@ -1,5 +1,5 @@
 {
-  "name": "serial-aid",
+  "name": "serialporttool",
   "private": true,
   "version": "0.1.3",
   "type": "module",

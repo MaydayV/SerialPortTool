@@ -303,13 +303,13 @@ async fn select_output_file(
         match kind.as_str() {
             "log" => (
                 "选择日志保存位置",
-                format!("serialaid-log-{}.log", unix_seconds),
+                format!("serialporttool-log-{}.log", unix_seconds),
                 "日志文件",
                 &["log", "txt"],
             ),
             "templates" => (
                 "导出协议模板",
-                "serialaid-templates.json".to_string(),
+                "serialporttool-templates.json".to_string(),
                 "JSON 文件",
                 &["json"],
             ),
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn buffered_log_writer_flushes_complete_content() {
         let path = std::env::temp_dir().join(format!(
-            "serial-aid-log-{}-{}.txt",
+            "serialporttool-log-{}-{}.txt",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn log_writer_rejects_paths_not_selected_in_this_session() {
-        let path = std::env::temp_dir().join("serial-aid-unauthorized.log");
+        let path = std::env::temp_dir().join("serialporttool-unauthorized.log");
         let manager = LogManager::default();
         let error = manager
             .append(path.to_str().unwrap(), "blocked\n")
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn authorized_export_truncates_then_appends_chunks() {
         let path = std::env::temp_dir().join(format!(
-            "serial-aid-export-{}-{}.txt",
+            "serialporttool-export-{}-{}.txt",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

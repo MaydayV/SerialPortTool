@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const bundlePath = join(tmpdir(), "serial-aid-crc-bundle.cjs");
+const bundlePath = join(tmpdir(), "serialporttool-crc-bundle.cjs");
 await build({
   entryPoints: ["src/utils/crc.ts"],
   bundle: true,

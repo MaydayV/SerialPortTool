@@ -4,7 +4,7 @@ const os = require("os");
 const path = require("path");
 
 async function main() {
-  const bundlePath = path.join(os.tmpdir(), "serial-aid-bytes-bundle.cjs");
+  const bundlePath = path.join(os.tmpdir(), "serialporttool-bytes-bundle.cjs");
   await esbuild.build({
     entryPoints: ["src/utils/bytes.ts"],
     bundle: true,
