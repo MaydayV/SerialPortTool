@@ -173,6 +173,20 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
+      - name: 清理非 DMG/EXE 资产
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API="repos/${GITHUB_REPOSITORY}"
+          gh api "${API}/releases/${RELEASE_ID}/assets" --paginate \
+            --jq '.[] | select((.name | endswith(".dmg") or endswith(".exe")) | not) | .id' \
+            | while read -r ASSET_ID; do
+                [ -z "${ASSET_ID}" ] || gh api --method DELETE "${API}/releases/assets/${ASSET_ID}"
+              done
+
       - name: 发布完整 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
