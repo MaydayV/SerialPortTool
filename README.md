@@ -87,7 +87,7 @@ npm run tauri dev
 npm run tauri build
 ```
 
-产物输出到 `src-tauri/target/release/bundle/`，支持 dmg（macOS）、msi/nsis（Windows）、deb/appimage（Linux）。
+产物输出到 `src-tauri/target/release/bundle/`。正式 GitHub Release 目前只发布 macOS `.dmg` 和 Windows NSIS `.exe`；Linux 构建暂不作为发行资产。
 
 ### MCP / AI Agent 控制
 - 内置仅 loopback 可访问的 Streamable HTTP MCP Server，AI Agent 控制正在运行的真实 GUI
