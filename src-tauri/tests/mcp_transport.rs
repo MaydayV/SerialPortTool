@@ -322,52 +322,38 @@ fn discover_tools_and_pagination_are_stable() {
         false
     );
 
-    let mut first = rpc_request("tools/list", 5, &token);
-    first["params"] = json!({});
-    let first_result = body_json(&send_rpc(
-        &server.endpoint(),
-        Some(&token),
-        first,
-        Some(MCP_PROTOCOL_VERSION),
-        None,
-        "application/json",
-    ));
-    assert_eq!(first_result["result"]["tools"].as_array().unwrap().len(), 5);
-    let cursor = first_result["result"]["nextCursor"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let mut second = rpc_request("tools/list", 6, &token);
-    second["params"] = json!({"cursor": cursor});
-    let second_result = body_json(&send_rpc(
-        &server.endpoint(),
-        Some(&token),
-        second,
-        Some(MCP_PROTOCOL_VERSION),
-        None,
-        "application/json",
-    ));
-    let mut third = rpc_request("tools/list", 7, &token);
-    third["params"] = json!({"cursor": second_result["result"]["nextCursor"].as_str().unwrap()});
-    let third_result = body_json(&send_rpc(
-        &server.endpoint(),
-        Some(&token),
-        third,
-        Some(MCP_PROTOCOL_VERSION),
-        None,
-        "application/json",
-    ));
-    let names = first_result["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .chain(second_result["result"]["tools"].as_array().unwrap())
-        .chain(third_result["result"]["tools"].as_array().unwrap())
-        .map(|tool| tool["name"].as_str().unwrap().to_string())
-        .collect::<Vec<_>>();
+    let mut names = Vec::new();
+    let mut cursor = None;
+    for id in 5..=8 {
+        let mut page = rpc_request("tools/list", id, &token);
+        page["params"] = cursor
+            .as_ref()
+            .map_or_else(|| json!({}), |value| json!({"cursor": value}));
+        let page_result = body_json(&send_rpc(
+            &server.endpoint(),
+            Some(&token),
+            page,
+            Some(MCP_PROTOCOL_VERSION),
+            None,
+            "application/json",
+        ));
+        names.extend(
+            page_result["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string()),
+        );
+        cursor = page_result["result"]["nextCursor"]
+            .as_str()
+            .map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
     let mut sorted = names.clone();
     sorted.sort();
-    assert_eq!(names.len(), 11);
+    assert_eq!(names.len(), 17);
     assert_eq!(names, sorted);
     server.shutdown();
 }

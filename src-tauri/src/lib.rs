@@ -352,6 +352,14 @@ fn deny_mcp_action(
 }
 
 #[tauri::command]
+fn mcp_frontend_bridge_response(
+    service: tauri::State<'_, Arc<AppControlService>>,
+    response: control::FrontendBridgeResponse,
+) -> Result<(), String> {
+    service.respond_frontend_bridge(response)
+}
+
+#[tauri::command]
 fn append_log_file(
     manager: tauri::State<'_, Arc<LogManager>>,
     path: String,
@@ -459,6 +467,7 @@ pub fn run() {
             list_pending_approvals,
             approve_mcp_action,
             deny_mcp_action,
+            mcp_frontend_bridge_response,
             select_output_file,
             write_user_file,
             append_log_file,

@@ -58,6 +58,13 @@ export interface PendingApproval {
   expires_at_ms: number;
 }
 
+export interface McpFrontendBridgeResponse {
+  request_id: string;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+}
+
 export const api = {
   listPorts: () => invoke<PortInfo[]>("list_ports"),
   connOpen: (cfg: ConnConfig) => invoke<void>("conn_open", { cfg }),
@@ -75,6 +82,8 @@ export const api = {
     invoke<void>("approve_mcp_action", { action_id: actionId }),
   denyMcpAction: (actionId: string) =>
     invoke<void>("deny_mcp_action", { action_id: actionId }),
+  mcpFrontendBridgeResponse: (response: McpFrontendBridgeResponse) =>
+    invoke<void>("mcp_frontend_bridge_response", { response }),
   selectOutputFile: (kind: "log" | "templates" | "curve") =>
     invoke<string | null>("select_output_file", { kind }),
   writeUserFile: (path: string, text: string, truncate: boolean) =>

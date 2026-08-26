@@ -14,6 +14,16 @@ pub const MAX_WAIT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_WAIT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_TARGET_LENGTH: usize = 4 * 1024;
 pub const MAX_BAUD_RATE: u32 = 10_000_000;
+pub const MAX_PROTOCOL_TEMPLATES: usize = 100;
+pub const MAX_TEMPLATE_NAME_LENGTH: usize = 100;
+pub const MAX_TEMPLATE_DESCRIPTION_LENGTH: usize = 1_000;
+pub const MAX_TEMPLATE_MARKER_BYTES: usize = 1_024;
+pub const MAX_GRAPH_SERIES: usize = 32;
+pub const MAX_GRAPH_SERIES_NAME_LENGTH: usize = 128;
+pub const MAX_GRAPH_POINTS: usize = 20_000;
+pub const MAX_GRAPH_BYTES: usize = 1024 * 1024;
+pub const MAX_FRONTEND_BRIDGE_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_FRAME_LENGTH: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -334,11 +344,204 @@ pub struct SelectProtocolRequest {
 
 impl SelectProtocolRequest {
     pub fn validate(&self) -> Result<(), ToolError> {
-        if self.protocol_id.trim().is_empty() {
+        let id = self.protocol_id.trim();
+        if id.is_empty() {
             return Err(ToolError::invalid_params("protocol_id must not be empty"));
+        }
+        if id.len() > MAX_TEMPLATE_NAME_LENGTH || id.contains('\0') {
+            return Err(ToolError::invalid_params(
+                "protocol_id is too long or contains a NUL byte",
+            ));
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtocolLengthField {
+    pub enabled: bool,
+    pub offset: usize,
+    pub bytes: usize,
+    pub endian: String,
+    #[serde(rename = "includeSelf")]
+    pub include_self: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtocolTemplate {
+    pub name: String,
+    pub header: String,
+    pub tail: String,
+    pub length: ProtocolLengthField,
+    pub checksum: String,
+    #[serde(rename = "checksumRange")]
+    pub checksum_range: String,
+    #[serde(rename = "checksumPosition")]
+    pub checksum_position: String,
+    #[serde(rename = "checksumEndian")]
+    pub checksum_endian: String,
+    pub description: String,
+}
+
+impl ProtocolTemplate {
+    pub fn validate(&self) -> Result<(), String> {
+        let name = self.name.trim();
+        if name.is_empty() || name.len() > MAX_TEMPLATE_NAME_LENGTH || name.contains('\0') {
+            return Err("协议模板名称无效".into());
+        }
+        if self.description.len() > MAX_TEMPLATE_DESCRIPTION_LENGTH {
+            return Err("协议模板说明过长".into());
+        }
+        for marker in [&self.header, &self.tail] {
+            let compact: String = marker
+                .chars()
+                .filter(|c| !c.is_ascii_whitespace())
+                .collect();
+            if !compact.len().is_multiple_of(2)
+                || compact.len() / 2 > MAX_TEMPLATE_MARKER_BYTES
+                || !compact.chars().all(|c| c.is_ascii_hexdigit())
+            {
+                return Err("协议模板帧头或帧尾无效".into());
+            }
+        }
+        if ![1, 2, 4].contains(&self.length.bytes)
+            || self.length.offset > MAX_FRAME_LENGTH
+            || !matches!(self.length.endian.as_str(), "little" | "big")
+        {
+            return Err("协议模板长度字段无效".into());
+        }
+        if !matches!(
+            self.checksum.as_str(),
+            "none" | "crc16_ibm" | "crc16_modbus" | "crc16_ccitt" | "crc32" | "sum8" | "xor8"
+        ) || !matches!(self.checksum_range.as_str(), "all" | "payload")
+            || !matches!(self.checksum_position.as_str(), "tail" | "before_tail")
+            || !matches!(self.checksum_endian.as_str(), "little" | "big")
+        {
+            return Err("协议模板校验字段无效".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtocolState {
+    pub templates: Vec<ProtocolTemplate>,
+    #[serde(rename = "activeName")]
+    pub active_name: String,
+    #[serde(rename = "rxEnabled")]
+    pub rx_enabled: bool,
+    #[serde(rename = "txEnabled")]
+    pub tx_enabled: bool,
+    #[serde(rename = "frameCount")]
+    pub frame_count: u64,
+    #[serde(rename = "frameErrorCount")]
+    pub frame_error_count: u64,
+    #[serde(rename = "frameTrashCount")]
+    pub frame_trash_count: u64,
+    #[serde(rename = "canDecodeActive")]
+    pub can_decode_active: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FrameStatistics {
+    #[serde(rename = "frameCount")]
+    pub frame_count: u64,
+    #[serde(rename = "frameErrorCount")]
+    pub frame_error_count: u64,
+    #[serde(rename = "frameTrashCount")]
+    pub frame_trash_count: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GraphSeriesSummary {
+    pub name: String,
+    #[serde(rename = "pointCount")]
+    pub point_count: usize,
+    pub color: String,
+    #[serde(rename = "minX", skip_serializing_if = "Option::is_none")]
+    pub min_x: Option<f64>,
+    #[serde(rename = "maxX", skip_serializing_if = "Option::is_none")]
+    pub max_x: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GraphState {
+    pub enabled: bool,
+    pub protocol: String,
+    #[serde(rename = "headerHex")]
+    pub header_hex: String,
+    #[serde(rename = "xRange")]
+    pub x_range: f64,
+    #[serde(rename = "frameCount")]
+    pub frame_count: u64,
+    pub series: Vec<GraphSeriesSummary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GraphDataRequest {
+    #[serde(default)]
+    pub series: Option<Vec<String>>,
+    pub max_points: usize,
+    pub max_bytes: usize,
+}
+
+impl GraphDataRequest {
+    pub fn validate(&self) -> Result<(), ToolError> {
+        if self.max_points == 0 || self.max_points > MAX_GRAPH_POINTS {
+            return Err(ToolError::invalid_params(format!(
+                "max_points must be between 1 and {}",
+                MAX_GRAPH_POINTS
+            )));
+        }
+        if self.max_bytes == 0 || self.max_bytes > MAX_GRAPH_BYTES {
+            return Err(ToolError::invalid_params(format!(
+                "max_bytes must be between 1 and {}",
+                MAX_GRAPH_BYTES
+            )));
+        }
+        if let Some(series) = &self.series {
+            if series.len() > MAX_GRAPH_SERIES {
+                return Err(ToolError::invalid_params(format!(
+                    "series may contain at most {} names",
+                    MAX_GRAPH_SERIES
+                )));
+            }
+            if series.iter().any(|name| {
+                name.trim().is_empty()
+                    || name.len() > MAX_GRAPH_SERIES_NAME_LENGTH
+                    || name.contains('\0')
+            }) {
+                return Err(ToolError::invalid_params("series contains an invalid name"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GraphPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GraphSeriesData {
+    pub name: String,
+    pub points: Vec<GraphPoint>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GraphData {
+    pub series: Vec<GraphSeriesData>,
+    #[serde(rename = "pointCount")]
+    pub point_count: usize,
+    #[serde(rename = "byteCount")]
+    pub byte_count: usize,
+    pub truncated: bool,
+    #[serde(rename = "minX", skip_serializing_if = "Option::is_none")]
+    pub min_x: Option<f64>,
+    #[serde(rename = "maxX", skip_serializing_if = "Option::is_none")]
+    pub max_x: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -599,10 +802,45 @@ fn schema_for(name: &str) -> (Value, Value) {
         "select_protocol" => (
             object_schema(
                 json!({
-                    "protocol_id": {"type": "string", "minLength": 1}
+                    "protocol_id": {"type": "string", "minLength": 1, "maxLength": MAX_TEMPLATE_NAME_LENGTH}
                 }),
                 &["protocol_id"],
             ),
+            standard_output_schema(action_output_schema(json!({"type": "object"}))),
+        ),
+        "get_protocol_templates" => (
+            empty_schema(),
+            standard_output_schema(json!({
+                "type": "object",
+                "required": ["templates"],
+                "properties": {"templates": {"type": "array", "maxItems": MAX_PROTOCOL_TEMPLATES}}
+            })),
+        ),
+        "get_protocol_state" => (
+            empty_schema(),
+            standard_output_schema(json!({"type": "object"})),
+        ),
+        "get_frame_statistics" => (
+            empty_schema(),
+            standard_output_schema(json!({"type": "object"})),
+        ),
+        "get_graph_state" => (
+            empty_schema(),
+            standard_output_schema(json!({"type": "object"})),
+        ),
+        "get_graph_data" => (
+            object_schema(
+                json!({
+                    "series": {"type": "array", "maxItems": MAX_GRAPH_SERIES, "items": {"type": "string", "minLength": 1, "maxLength": MAX_GRAPH_SERIES_NAME_LENGTH}},
+                    "max_points": {"type": "integer", "minimum": 1, "maximum": MAX_GRAPH_POINTS},
+                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": MAX_GRAPH_BYTES}
+                }),
+                &["max_points", "max_bytes"],
+            ),
+            standard_output_schema(json!({"type": "object"})),
+        ),
+        "clear_graph" => (
+            empty_schema(),
             standard_output_schema(action_output_schema(json!({"type": "object"}))),
         ),
         _ => (
@@ -700,6 +938,54 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Select an existing protocol template by stable identifier.",
             false,
             false,
+            true,
+        ),
+        (
+            "get_protocol_templates",
+            "Get protocol templates",
+            "Read the authoritative protocol templates from the Vue protocol store.",
+            true,
+            false,
+            true,
+        ),
+        (
+            "get_protocol_state",
+            "Get protocol state",
+            "Read the active protocol, RX/TX protocol switches, templates, and decode counters.",
+            true,
+            false,
+            true,
+        ),
+        (
+            "get_frame_statistics",
+            "Get frame statistics",
+            "Read frame, invalid-frame, and discarded-byte counters from the active protocol store.",
+            true,
+            false,
+            true,
+        ),
+        (
+            "get_graph_state",
+            "Get graph state",
+            "Read waveform parser settings and bounded series summaries from the Vue graph store.",
+            true,
+            false,
+            true,
+        ),
+        (
+            "get_graph_data",
+            "Get graph data",
+            "Read bounded waveform points with explicit series, point, and byte limits.",
+            true,
+            false,
+            false,
+        ),
+        (
+            "clear_graph",
+            "Clear graph",
+            "Clear waveform points and parser buffers after permission checks.",
+            false,
+            true,
             true,
         ),
     ];

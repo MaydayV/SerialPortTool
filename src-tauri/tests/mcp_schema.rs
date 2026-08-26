@@ -6,7 +6,7 @@ use serialporttool_lib::mcp::{
     MAX_WAIT_BYTES, MAX_WAIT_TIMEOUT_MS,
 };
 
-const EXPECTED_TOOLS: [&str; 11] = [
+const EXPECTED_TOOLS: [&str; 17] = [
     "list_ports",
     "get_state",
     "read_received",
@@ -18,6 +18,12 @@ const EXPECTED_TOOLS: [&str; 11] = [
     "send_data",
     "clear_received",
     "select_protocol",
+    "get_protocol_templates",
+    "get_protocol_state",
+    "get_frame_statistics",
+    "get_graph_state",
+    "get_graph_data",
+    "clear_graph",
 ];
 
 #[test]

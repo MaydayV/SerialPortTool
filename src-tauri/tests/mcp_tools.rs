@@ -128,15 +128,10 @@ fn read_and_clear_use_the_same_bounded_receive_buffer() {
 }
 
 #[test]
-fn unsupported_frontend_bridges_fail_explicitly_without_fake_success() {
+fn unsupported_frontend_bridge_fails_explicitly_without_fake_success() {
     let service = AppControlService::new();
     let app = mock_app();
-    let result = call_tool(
-        &service,
-        &app,
-        "select_protocol",
-        Some(&json!({"protocol_id": "template-1"})),
-    );
+    let result = call_tool(&service, &app, "get_connection_profiles", Some(&json!({})));
 
     assert!(result.is_error);
     assert_eq!(

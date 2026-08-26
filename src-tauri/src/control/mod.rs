@@ -5,7 +5,10 @@ pub mod state;
 
 use crate::conn::{ConnConfig, ConnManager, RxObserver, StatusObserver};
 use crate::mcp::PermissionMode;
-use crate::mcp::{ActionResult, MAX_SEND_BYTES};
+use crate::mcp::{
+    ActionResult, GraphData, GraphDataRequest, GraphState, ProtocolState,
+    MAX_FRONTEND_BRIDGE_RESPONSE_BYTES, MAX_SEND_BYTES,
+};
 use events::{
     timestamp_ms, ActionEvent, ActionEventLog, ActionOrigin, ActionStage, ApprovalRequiredEvent,
     PendingApprovalInfo,
@@ -32,6 +35,162 @@ pub use state::{
 
 const ACTION_ID_COUNTER_START: u64 = 1;
 const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
+const FRONTEND_BRIDGE_TIMEOUT: Duration = Duration::from_millis(500);
+const MAX_PENDING_BRIDGE_REQUESTS: usize = 32;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FrontendBridgeRequest {
+    pub request_id: String,
+    pub operation: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FrontendBridgeResponse {
+    pub request_id: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+struct PendingBridgeResponse {
+    response: Mutex<Option<FrontendBridgeResponse>>,
+    changed: Condvar,
+}
+
+struct FrontendBridge {
+    counter: AtomicU64,
+    pending: Mutex<HashMap<String, Arc<PendingBridgeResponse>>>,
+}
+
+impl Default for FrontendBridge {
+    fn default() -> Self {
+        Self {
+            counter: AtomicU64::new(1),
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl FrontendBridge {
+    fn next_id(&self) -> String {
+        let sequence = self.counter.fetch_add(1, Ordering::Relaxed);
+        let millis = timestamp_ms();
+        format!("bridge-{millis}-{sequence}")
+    }
+
+    fn respond(&self, response: FrontendBridgeResponse) -> Result<(), String> {
+        if response.request_id.is_empty() || response.request_id.len() > 128 {
+            return Err("前端 bridge request_id 无效".into());
+        }
+        if let Some(result) = &response.result {
+            let size = serde_json::to_vec(result)
+                .map_err(|_| "前端 bridge 响应无法序列化".to_string())?
+                .len();
+            if size > MAX_FRONTEND_BRIDGE_RESPONSE_BYTES {
+                return Err("前端 bridge 响应超过大小限制".into());
+            }
+        }
+        if let Some(error) = &response.error {
+            if error.is_empty() || error.chars().count() > 512 {
+                return Err("前端 bridge 错误消息无效".into());
+            }
+        }
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&response.request_id)
+            .cloned()
+            .ok_or_else(|| "前端 bridge request_id 不存在或已过期".to_string())?;
+        let mut current = pending
+            .response
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_some() {
+            return Err("前端 bridge response 已提交".into());
+        }
+        *current = Some(response);
+        pending.changed.notify_all();
+        Ok(())
+    }
+
+    fn request<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        operation: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let request_id = self.next_id();
+        let pending = Arc::new(PendingBridgeResponse {
+            response: Mutex::new(None),
+            changed: Condvar::new(),
+        });
+        {
+            let mut requests = self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if requests.len() >= MAX_PENDING_BRIDGE_REQUESTS {
+                return Err("前端 bridge 请求过多".into());
+            }
+            requests.insert(request_id.clone(), pending.clone());
+        }
+        let request = FrontendBridgeRequest {
+            request_id: request_id.clone(),
+            operation: operation.to_string(),
+            payload,
+        };
+        if let Err(error) = app.emit("mcp-frontend-request", request) {
+            self.pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&request_id);
+            return Err(format!("发送前端 bridge 请求失败: {error}"));
+        }
+        let mut response = pending
+            .response
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let deadline = std::time::Instant::now() + FRONTEND_BRIDGE_TIMEOUT;
+        while response.is_none() {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (next, result) = pending
+                .changed
+                .wait_timeout(response, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            response = next;
+            if result.timed_out() {
+                break;
+            }
+        }
+        let response = response.take();
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&request_id);
+        let Some(response) = response else {
+            return Err("前端 bridge 响应超时，前端可能尚未启动".into());
+        };
+        if response.request_id != request_id {
+            return Err("前端 bridge 响应 request_id 不匹配".into());
+        }
+        if response.ok {
+            response
+                .result
+                .ok_or_else(|| "前端 bridge 成功响应缺少 result".into())
+        } else {
+            Err(response
+                .error
+                .unwrap_or_else(|| "前端 bridge 返回未知错误".into()))
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ApprovalDecision {
@@ -69,6 +228,7 @@ pub struct AppControlService {
     pending_config: Arc<Mutex<Option<ConnConfig>>>,
     permission_mode: Arc<Mutex<PermissionMode>>,
     pending_approvals: Arc<Mutex<HashMap<String, Arc<PendingApproval>>>>,
+    frontend_bridge: Arc<FrontendBridge>,
     approval_timeout: Duration,
 }
 
@@ -118,6 +278,7 @@ impl AppControlService {
             pending_config: Arc::new(Mutex::new(None)),
             permission_mode: Arc::new(Mutex::new(PermissionMode::Ask)),
             pending_approvals: Arc::new(Mutex::new(HashMap::new())),
+            frontend_bridge: Arc::new(FrontendBridge::default()),
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
         }
     }
@@ -205,6 +366,111 @@ impl AppControlService {
 
     pub fn latest_rx_cursor(&self) -> u64 {
         self.rx_buffer.latest_cursor()
+    }
+
+    pub fn respond_frontend_bridge(&self, response: FrontendBridgeResponse) -> Result<(), String> {
+        self.frontend_bridge.respond(response)
+    }
+
+    pub fn protocol_state<R: Runtime>(&self, app: &AppHandle<R>) -> Result<ProtocolState, String> {
+        let value =
+            self.frontend_bridge
+                .request(app, "protocol.get_state", serde_json::json!({}))?;
+        let state: ProtocolState = serde_json::from_value(value)
+            .map_err(|error| format!("前端 bridge 协议状态无效: {error}"))?;
+        validate_protocol_state(&state)?;
+        Ok(state)
+    }
+
+    pub fn graph_state<R: Runtime>(&self, app: &AppHandle<R>) -> Result<GraphState, String> {
+        let value = self
+            .frontend_bridge
+            .request(app, "graph.get_state", serde_json::json!({}))?;
+        let state: GraphState = serde_json::from_value(value)
+            .map_err(|error| format!("前端 bridge 波形状态无效: {error}"))?;
+        validate_graph_state(&state)?;
+        Ok(state)
+    }
+
+    pub fn graph_data<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        request: &GraphDataRequest,
+    ) -> Result<GraphData, String> {
+        let value = self.frontend_bridge.request(
+            app,
+            "graph.get_data",
+            serde_json::to_value(request).map_err(|error| error.to_string())?,
+        )?;
+        let data: GraphData = serde_json::from_value(value)
+            .map_err(|error| format!("前端 bridge 波形数据无效: {error}"))?;
+        validate_graph_data(&data, request)?;
+        Ok(data)
+    }
+
+    pub fn select_protocol<R: Runtime>(
+        &self,
+        protocol_id: String,
+        app: AppHandle<R>,
+        origin: ActionOrigin,
+    ) -> Result<ActionResult<ProtocolState>, String> {
+        let action_id = self.authorize_mcp_action(
+            &app,
+            &origin,
+            "select_protocol",
+            "切换协议模板",
+            &format!("protocol_id={protocol_id}"),
+        )?;
+        let bridge = self.frontend_bridge.clone();
+        let bridge_app = app.clone();
+        self.run_action_with_id(
+            &app,
+            origin,
+            "select_protocol",
+            "切换协议模板",
+            action_id,
+            move || {
+                let value = bridge.request(
+                    &bridge_app,
+                    "protocol.select",
+                    serde_json::json!({"protocol_id": protocol_id}),
+                )?;
+                let state: ProtocolState = serde_json::from_value(value)
+                    .map_err(|error| format!("前端 bridge 协议状态无效: {error}"))?;
+                validate_protocol_state(&state)?;
+                Ok(state)
+            },
+        )
+    }
+
+    pub fn clear_graph<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        origin: ActionOrigin,
+    ) -> Result<ActionResult<GraphState>, String> {
+        let action_id = self.authorize_mcp_action(
+            &app,
+            &origin,
+            "clear_graph",
+            "清空波形数据",
+            "清除当前曲线点和解析缓冲",
+        )?;
+        let bridge = self.frontend_bridge.clone();
+        let bridge_app = app.clone();
+        self.run_action_with_id(
+            &app,
+            origin,
+            "clear_graph",
+            "清空波形数据",
+            action_id,
+            move || {
+                let value = bridge.request(&bridge_app, "graph.clear", serde_json::json!({}))?;
+                let state: GraphState = serde_json::from_value(value)
+                    .map_err(|error| format!("前端 bridge 波形状态无效: {error}"))?;
+                validate_graph_state(&state)?;
+                Ok(state)
+            },
+        )
     }
 
     pub fn list_state(&self) -> ConnectionSnapshot {
@@ -694,6 +960,102 @@ impl AppControlService {
     }
 }
 
+fn validate_protocol_state(state: &ProtocolState) -> Result<(), String> {
+    if state.templates.is_empty() || state.templates.len() > crate::mcp::MAX_PROTOCOL_TEMPLATES {
+        return Err("前端 bridge 返回的协议模板数量无效".into());
+    }
+    let mut names = std::collections::HashSet::new();
+    for template in &state.templates {
+        template.validate()?;
+        if !names.insert(template.name.clone()) {
+            return Err("前端 bridge 返回重复的协议模板名称".into());
+        }
+    }
+    if !names.contains(&state.active_name) {
+        return Err("前端 bridge 返回的活动协议不存在".into());
+    }
+    Ok(())
+}
+
+fn validate_graph_state(state: &GraphState) -> Result<(), String> {
+    if !matches!(state.protocol.as_str(), "ascii" | "binary")
+        || !state.x_range.is_finite()
+        || state.x_range <= 0.0
+        || state.series.len() > crate::mcp::MAX_GRAPH_SERIES
+    {
+        return Err("前端 bridge 返回的波形状态无效".into());
+    }
+    let mut names = std::collections::HashSet::new();
+    for series in &state.series {
+        if series.name.trim().is_empty()
+            || series.name.len() > crate::mcp::MAX_GRAPH_SERIES_NAME_LENGTH
+            || !names.insert(series.name.clone())
+            || series.point_count > crate::mcp::MAX_GRAPH_POINTS
+        {
+            return Err("前端 bridge 返回的曲线摘要无效".into());
+        }
+        if let Some(value) = series.min_x {
+            if !value.is_finite() {
+                return Err("前端 bridge 返回非有限曲线范围".into());
+            }
+        }
+        if let Some(value) = series.max_x {
+            if !value.is_finite() {
+                return Err("前端 bridge 返回非有限曲线范围".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_graph_data(data: &GraphData, request: &GraphDataRequest) -> Result<(), String> {
+    if data.series.len() > crate::mcp::MAX_GRAPH_SERIES
+        || data.point_count > request.max_points
+        || data.byte_count > request.max_bytes
+    {
+        return Err("前端 bridge 返回的波形数据超过请求限制".into());
+    }
+    let mut point_count = 0;
+    let mut names = std::collections::HashSet::new();
+    for series in &data.series {
+        if series.name.trim().is_empty()
+            || series.name.len() > crate::mcp::MAX_GRAPH_SERIES_NAME_LENGTH
+            || !names.insert(series.name.clone())
+        {
+            return Err("前端 bridge 返回的曲线名称无效".into());
+        }
+        point_count += series.points.len();
+        if point_count > request.max_points {
+            return Err("前端 bridge 返回的点数超过请求限制".into());
+        }
+        for point in &series.points {
+            if !point.x.is_finite() || !point.y.is_finite() {
+                return Err("前端 bridge 返回非有限波形点".into());
+            }
+        }
+    }
+    if point_count != data.point_count {
+        return Err("前端 bridge 波形点数统计不一致".into());
+    }
+    let serialized_size = serde_json::to_vec(data)
+        .map_err(|_| "前端 bridge 波形数据无法序列化".to_string())?
+        .len();
+    if serialized_size > request.max_bytes {
+        return Err("前端 bridge 波形数据超过字节限制".into());
+    }
+    if let Some(value) = data.min_x {
+        if !value.is_finite() {
+            return Err("前端 bridge 返回非有限波形范围".into());
+        }
+    }
+    if let Some(value) = data.max_x {
+        if !value.is_finite() {
+            return Err("前端 bridge 返回非有限波形范围".into());
+        }
+    }
+    Ok(())
+}
+
 fn summarize_error(error: &str) -> String {
     const MAX_SUMMARY_CHARS: usize = 160;
     error.chars().take(MAX_SUMMARY_CHARS).collect()
@@ -809,6 +1171,69 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         panic!("approval was not published");
+    }
+
+    #[test]
+    fn frontend_bridge_correlates_responses_and_rejects_replays() {
+        let bridge = FrontendBridge::default();
+        let pending = Arc::new(PendingBridgeResponse {
+            response: Mutex::new(None),
+            changed: Condvar::new(),
+        });
+        bridge
+            .pending
+            .lock()
+            .unwrap()
+            .insert("bridge-test".into(), pending.clone());
+
+        bridge
+            .respond(FrontendBridgeResponse {
+                request_id: "bridge-test".into(),
+                ok: true,
+                result: Some(serde_json::json!({"ok": true})),
+                error: None,
+            })
+            .unwrap();
+        assert_eq!(
+            pending
+                .response
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .request_id,
+            "bridge-test"
+        );
+        assert!(bridge
+            .respond(FrontendBridgeResponse {
+                request_id: "bridge-test".into(),
+                ok: true,
+                result: Some(serde_json::json!({"replay": true})),
+                error: None,
+            })
+            .unwrap_err()
+            .contains("已提交"));
+        assert!(bridge
+            .respond(FrontendBridgeResponse {
+                request_id: "expired".into(),
+                ok: false,
+                result: None,
+                error: Some("expired".into()),
+            })
+            .unwrap_err()
+            .contains("不存在"));
+    }
+
+    #[test]
+    fn frontend_bridge_timeout_is_bounded_and_cleans_pending() {
+        let bridge = FrontendBridge::default();
+        let started = std::time::Instant::now();
+        let error = bridge
+            .request(&app(), "protocol.get_state", serde_json::json!({}))
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(error.contains("超时"));
+        assert!(bridge.pending.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use super::schema::{
     ActionResult, ClearReceivedRequest, ConfigureConnectionRequest, ConnectRequest, ConnectionKind,
-    DisconnectRequest, ReadReceivedRequest, SelectProtocolRequest, SendDataRequest, ToolError,
-    ToolErrorCode, ToolResult, WaitForDataRequest, MAX_READ_BYTES,
+    DisconnectRequest, EmptyRequest, FrameStatistics, GraphDataRequest, ReadReceivedRequest,
+    SelectProtocolRequest, SendDataRequest, ToolError, ToolErrorCode, ToolResult,
+    WaitForDataRequest, MAX_READ_BYTES,
 };
 use crate::conn::{ConnConfig, SerialConfig, TcpUdpConfig};
 use crate::control::events::{McpActivityEvent, McpActivityStage};
@@ -122,8 +123,17 @@ pub fn call_tool<R: Runtime>(
             if let Err(error) = request.validate() {
                 return ToolResult::error(&error);
             }
-            unavailable_bridge("协议模板仍由 Vue Pinia 持有，MCP bridge 尚未接入；不会伪造成功结果")
+            match service.select_protocol(request.protocol_id, app.clone(), ActionOrigin::Mcp) {
+                Ok(action) => action_result(action, "协议模板已切换"),
+                Err(error) => ToolResult::error(&tool_error_from_string(&error)),
+            }
         }
+        "get_protocol_templates" => get_protocol_templates(service, app),
+        "get_protocol_state" => get_protocol_state(service, app),
+        "get_frame_statistics" => get_frame_statistics(service, app),
+        "get_graph_state" => get_graph_state(service, app),
+        "get_graph_data" => get_graph_data(service, app, arguments),
+        "clear_graph" => clear_graph(service, app, arguments),
         _ => ToolResult::error(&ToolError::invalid_params(format!("unknown tool: {name}"))),
     }
 }
@@ -267,6 +277,82 @@ fn clear_received<R: Runtime>(
     }
     match service.clear_received(app.clone(), ActionOrigin::Mcp) {
         Ok(action) => action_result(action, "接收缓冲已清空"),
+        Err(error) => ToolResult::error(&tool_error_from_string(&error)),
+    }
+}
+
+fn get_protocol_templates<R: Runtime>(
+    service: &AppControlService,
+    app: &AppHandle<R>,
+) -> ToolResult {
+    match service.protocol_state(app) {
+        Ok(state) => {
+            let count = state.templates.len();
+            ToolResult::success(
+                &json!({"templates": state.templates, "activeName": state.active_name}),
+                format!("已读取 {} 个协议模板", count),
+            )
+        }
+        Err(error) => ToolResult::error(&tool_error_from_string(&error)),
+    }
+}
+
+fn get_protocol_state<R: Runtime>(service: &AppControlService, app: &AppHandle<R>) -> ToolResult {
+    match service.protocol_state(app) {
+        Ok(state) => ToolResult::success(&state, "已读取协议状态和解帧统计"),
+        Err(error) => ToolResult::error(&tool_error_from_string(&error)),
+    }
+}
+
+fn get_frame_statistics<R: Runtime>(service: &AppControlService, app: &AppHandle<R>) -> ToolResult {
+    match service.protocol_state(app) {
+        Ok(state) => {
+            let stats = FrameStatistics {
+                frame_count: state.frame_count,
+                frame_error_count: state.frame_error_count,
+                frame_trash_count: state.frame_trash_count,
+            };
+            ToolResult::success(&stats, "已读取解帧统计")
+        }
+        Err(error) => ToolResult::error(&tool_error_from_string(&error)),
+    }
+}
+
+fn get_graph_state<R: Runtime>(service: &AppControlService, app: &AppHandle<R>) -> ToolResult {
+    match service.graph_state(app) {
+        Ok(state) => ToolResult::success(&state, "已读取波形状态和曲线摘要"),
+        Err(error) => ToolResult::error(&tool_error_from_string(&error)),
+    }
+}
+
+fn get_graph_data<R: Runtime>(
+    service: &AppControlService,
+    app: &AppHandle<R>,
+    arguments: Option<&Value>,
+) -> ToolResult {
+    let request = match parse_arguments::<GraphDataRequest>(arguments) {
+        Ok(request) => request,
+        Err(error) => return ToolResult::error(&error),
+    };
+    if let Err(error) = request.validate() {
+        return ToolResult::error(&error);
+    }
+    match service.graph_data(app, &request) {
+        Ok(data) => ToolResult::success(&data, format!("已读取 {} 个波形点", data.point_count)),
+        Err(error) => ToolResult::error(&tool_error_from_string(&error)),
+    }
+}
+
+fn clear_graph<R: Runtime>(
+    service: &AppControlService,
+    app: &AppHandle<R>,
+    arguments: Option<&Value>,
+) -> ToolResult {
+    if let Err(error) = parse_arguments::<EmptyRequest>(arguments) {
+        return ToolResult::error(&error);
+    }
+    match service.clear_graph(app.clone(), ActionOrigin::Mcp) {
+        Ok(action) => action_result(action, "波形数据已清空"),
         Err(error) => ToolResult::error(&tool_error_from_string(&error)),
     }
 }

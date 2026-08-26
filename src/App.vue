@@ -23,11 +23,13 @@ import { formatTime } from "./utils/bytes";
 import { saveTextFile } from "./utils/save";
 import { api } from "./api";
 import { isTauri } from "@tauri-apps/api/core";
+import { setupMcpFrontendBridge } from "./mcpFrontendBridge";
 
 const conn = useConnStore();
 const rx = useRxStore();
 const tx = useTxStore();
 const graph = useGraphStore();
+let teardownMcpBridge: (() => void) | null = null;
 
 const view = ref<"debug" | "graph">("debug");
 const theme = ref<"light" | "dark" | "system">("light");
@@ -284,6 +286,9 @@ onMounted(() => {
   initPersistence(theme);
   rx.startRateTimer();
   if (isTauri()) {
+    void setupMcpFrontendBridge().then((teardown) => {
+      teardownMcpBridge = teardown;
+    });
     void conn.setupListeners().catch((error) => {
       conn.lastError = `事件监听初始化失败：${String(error)}`;
     });
@@ -402,6 +407,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("beforeunload", onBeforeUnload);
   sysMedia?.removeEventListener("change", onSystemThemeChange);
   graph.setViewActive(false);
+  teardownMcpBridge?.();
+  teardownMcpBridge = null;
   conn.teardownListeners();
   rx.teardown();
   onBeforeUnload();
